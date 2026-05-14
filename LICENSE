@@ -1,0 +1,51 @@
+SAR MANAGER LICENSE
+
+Copyright © 2023 Pascal Hamish Seguin. All rights reserved.
+
+UNLIMITED LICENSE GRANTED TO:
+Southeastern Alberta Search and Rescue (SEASAR)
+
+TERMS AND CONDITIONS:
+
+1. GRANT OF LICENSE
+   SEASAR is granted an unlimited, perpetual, worldwide, non-exclusive, royalty-free license to use, reproduce, modify, and distribute this software and its source code, including but not limited to:
+   - Using SAR Manager in production environments
+   - Modifying the code for organizational needs
+   - Creating derivative works
+   - Distributing modified versions within the organization
+   - Integrating with other systems used by SEASAR
+
+2. RESTRICTIONS
+   This license is granted exclusively to SEASAR and its authorized personnel. No part of this software may be:
+   - Transferred, assigned, or licensed to any other organization without prior written consent from Pascal Hamish Seguin
+   - Used for commercial purposes outside of SEASAR's Search and Rescue operations
+   - Sold or sublicensed to third parties
+
+3. ATTRIBUTION
+   All distributions, modifications, or derivative works must retain this copyright notice and license text.
+
+4. TECHNICAL SUPPORT
+   This software is provided "as-is" without warranty of any kind, express or implied. The author shall not be liable for any damages arising from its use.
+
+5. TERMINATION
+   This license remains in effect indefinitely for SEASAR's use in Search and Rescue operations.
+
+6. THIRD-PARTY DEPENDENCIES
+   This software includes the following open-source components with their respective licenses:
+
+   - Next.js (MIT License) - https://github.com/vercel/next.js
+   - React (MIT License) - https://github.com/facebook/react
+   - TypeScript (Apache 2.0 License) - https://github.com/microsoft/TypeScript
+   - Tailwind CSS (MIT License) - https://github.com/tailwindlabs/tailwindcss
+   - Leaflet (BSD 2-Clause License) - https://github.com/Leaflet/Leaflet
+   - react-leaflet (MIT License) - https://github.com/PaulLeCam/react-leaflet
+   - Axios (MIT License) - https://github.com/axios/axios
+
+   All third-party licenses are respected and included in the node_modules directory.
+
+---
+
+For inquiries regarding this license or usage outside of SEASAR, contact:
+Pascal Hamish Seguin
+
+For SEASAR operations, this software is provided under the terms stated above.
