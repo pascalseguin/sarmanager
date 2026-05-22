@@ -1,0 +1,10 @@
+.git
+.gitignore
+.claude
+.next
+node_modules
+install
+Dockerfile
+.dockerignore
+*.log
+*.md

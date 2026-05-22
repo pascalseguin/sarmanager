@@ -1,0 +1,153 @@
+THIRD-PARTY LICENSES
+SAR Manager — Southeastern Alberta Search and Rescue (SEASAR)
+Last Updated: May 2026
+
+This file documents all third-party open-source licenses used in SAR Manager.
+Run `npm ls --depth=0` to verify current direct dependencies.
+
+================================================================================
+MIT LICENSE
+================================================================================
+
+The following packages are licensed under the MIT License:
+
+  next@16.2.6                 https://github.com/vercel/next.js
+  react@19.2.4                https://github.com/facebook/react
+  react-dom@19.2.4            https://github.com/facebook/react
+  tailwindcss@^4              https://github.com/tailwindlabs/tailwindcss
+  @tailwindcss/postcss@^4     https://github.com/tailwindlabs/tailwindcss
+  postcss                     https://github.com/postcss/postcss
+  eslint@^9                   https://github.com/eslint/eslint
+  eslint-config-next@16.2.6   https://github.com/vercel/next.js
+  @types/node@^20             https://github.com/DefinitelyTyped/DefinitelyTyped
+  @types/react@^19            https://github.com/DefinitelyTyped/DefinitelyTyped
+  @types/react-dom@^19        https://github.com/DefinitelyTyped/DefinitelyTyped
+  @types/geojson@^7946        https://github.com/DefinitelyTyped/DefinitelyTyped
+  geist                       https://github.com/vercel/geist-font
+
+MIT LICENSE TEXT:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+================================================================================
+APACHE LICENSE 2.0
+================================================================================
+
+The following packages are licensed under the Apache License 2.0:
+
+  typescript@^5               https://github.com/microsoft/TypeScript
+
+APACHE LICENSE 2.0 TEXT:
+
+  Licensed under the Apache License, Version 2.0 (the "License"); you may not
+  use this file except in compliance with the License. You may obtain a copy of
+  the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software distributed
+  under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+  CONDITIONS OF ANY KIND, either express or implied. See the License for the
+  specific language governing permissions and limitations under the License.
+
+  Full license text: https://www.apache.org/licenses/LICENSE-2.0.txt
+
+================================================================================
+EXTERNAL SERVICES (RUNTIME, NO BUNDLED CODE)
+================================================================================
+
+The following external services are called at runtime via HTTPS. No source code
+from these services is bundled with SAR Manager; only API calls are made.
+
+  Open-Meteo
+    License:    Creative Commons Attribution 4.0 International (CC BY 4.0)
+    Usage:      Current weather conditions and 3-day forecast for IPP coordinates
+    URL:        https://open-meteo.com
+    Note:       Free, no API key required. Data sourced from national weather
+                services including Environment Canada.
+
+  Environment Canada — Meteorological Service of Canada (MSC)
+    License:    Government of Canada Open Government Licence
+                https://open.canada.ca/en/open-government-licence-canada
+    Usage:      Best-effort weather alert fetch for Alberta
+    URL:        https://dd.weather.gc.ca
+
+  D4H Team Manager (Canada)
+    License:    Commercial — credentials required; governed by SEASAR's
+                D4H service agreement
+    Usage:      Incident creation, personnel callouts, whiteboard notices
+    URL:        https://d4h.com
+
+  CalTopo
+    License:    Commercial — service account credentials required; governed by
+                SEASAR's CalTopo service agreement
+    Usage:      SAR map creation, ISRID probability ring features
+    URL:        https://caltopo.com
+
+  saralberta.ca
+    License:    SAR Alberta member data — referenced as links only, no data
+                is scraped or cached by this application
+    Usage:      Mutual aid team proximity display (hardcoded centroids)
+    URL:        https://saralberta.ca
+
+================================================================================
+PACKAGE VERSIONS
+================================================================================
+
+Production dependencies:
+  next@16.2.6                 MIT
+  react@19.2.4                MIT
+  react-dom@19.2.4            MIT
+
+Development / build dependencies:
+  typescript@^5               Apache 2.0
+  @types/node@^20             MIT
+  @types/react@^19            MIT
+  @types/react-dom@^19        MIT
+  @types/geojson@^7946.0.16   MIT
+  tailwindcss@^4              MIT
+  @tailwindcss/postcss@^4     MIT
+  eslint@^9                   MIT
+  eslint-config-next@16.2.6   MIT
+
+================================================================================
+ATTRIBUTION
+================================================================================
+
+SAR Manager was built using open-source software from:
+
+  - Vercel and the Next.js community (framework, fonts)
+  - Facebook / Meta and the React community (UI rendering)
+  - Microsoft and the TypeScript community (type safety)
+  - Tailwind Labs (styling)
+  - DefinitelyTyped contributors (type definitions)
+  - Open-Meteo contributors (weather data)
+
+================================================================================
+COMPLIANCE NOTES
+================================================================================
+
+1. All third-party licenses are preserved in node_modules at install time.
+2. When distributing SAR Manager, this LICENSES file must be retained.
+3. No warranty is provided for any third-party components.
+4. For use outside of SEASAR, ensure compliance with each component's license.
+5. Always verify current license terms at the URLs listed above before
+   distributing or modifying this software.
+
+================================================================================

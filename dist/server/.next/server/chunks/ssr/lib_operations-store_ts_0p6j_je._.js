@@ -1,0 +1,3 @@
+module.exports=[98078,a=>{"use strict";let b="sarmanager_operations";function c(){try{return JSON.parse(localStorage.getItem(b)??"[]")}catch{return[]}}function d(a){localStorage.setItem(b,JSON.stringify(a))}a.s(["operationsStore",0,{list:()=>c().sort((a,b)=>b.created_at.localeCompare(a.created_at)),get:a=>c().find(b=>b.id===a)??null,create(a){let b=new Date().toISOString(),e={...a,id:crypto.randomUUID(),status:"active",started_at:b,created_at:b,updated_at:b},f=c();return f.unshift(e),d(f),e},update(a,b){let e=c(),f=e.findIndex(b=>b.id===a);return -1===f?null:(e[f]={...e[f],...b,updated_at:new Date().toISOString()},d(e),e[f])},close(a){this.update(a,{status:"closed"})}}])}];
+
+//# sourceMappingURL=lib_operations-store_ts_0p6j_je._.js.map
