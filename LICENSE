@@ -11,11 +11,12 @@ TERMS AND CONDITIONS:
    SEASAR is granted an unlimited, perpetual, worldwide, non-exclusive, royalty-free
    license to use, reproduce, modify, and distribute this software and its source code,
    including but not limited to:
-   - Using SAR Manager in production environments
+   - Using SAR Manager in production environments, including deployment to Azure
    - Modifying the code for organizational needs
    - Creating derivative works
    - Distributing modified versions within the organization
-   - Integrating with other systems used by SEASAR
+   - Integrating with other systems used by SEASAR (D4H, CalTopo, SAR Command Assist,
+     Azure Active Directory, and other tools)
 
 2. RESTRICTIONS
    This license is granted exclusively to SEASAR and its authorized personnel.
@@ -42,18 +43,37 @@ TERMS AND CONDITIONS:
    This software includes the following open-source components under their respective
    licenses (see LICENSES file for full text):
 
-   - Next.js (MIT License) — https://github.com/vercel/next.js
-   - React (MIT License) — https://github.com/facebook/react
-   - TypeScript (Apache 2.0 License) — https://github.com/microsoft/TypeScript
-   - Tailwind CSS (MIT License) — https://github.com/tailwindlabs/tailwindcss
-   - @types/geojson (MIT License) — https://github.com/DefinitelyTyped/DefinitelyTyped
-   - ESLint (MIT License) — https://github.com/eslint/eslint
+   Core framework and UI:
+   - Next.js (MIT License)           — https://github.com/vercel/next.js
+   - React (MIT License)             — https://github.com/facebook/react
+   - TypeScript (Apache 2.0)         — https://github.com/microsoft/TypeScript
+   - Tailwind CSS (MIT License)      — https://github.com/tailwindlabs/tailwindcss
+
+   Authentication:
+   - @azure/msal-react (MIT)         — https://github.com/AzureAD/microsoft-authentication-library-for-js
+   - @azure/msal-browser (MIT)       — https://github.com/AzureAD/microsoft-authentication-library-for-js
+
+   Database:
+   - pg / node-postgres (MIT)        — https://github.com/brianc/node-postgres
+
+   Real-time:
+   - socket.io (MIT)                 — https://github.com/socketio/socket.io
+
+   QR codes:
+   - qrcode (MIT)                    — https://github.com/soldair/node-qrcode
+
+   Utilities:
+   - @types/geojson (MIT)            — https://github.com/DefinitelyTyped/DefinitelyTyped
+   - ESLint (MIT)                    — https://github.com/eslint/eslint
 
    External services consumed at runtime (no license obligations on this software):
-   - Open-Meteo weather API — https://open-meteo.com (open data, CC BY 4.0)
-   - Environment Canada weather alerts — https://weather.gc.ca (Government of Canada Open Data)
-   - D4H Team Manager API — https://d4h.com (commercial service, credentials required)
-   - CalTopo Team API — https://caltopo.com (commercial service, credentials required)
+   - Open-Meteo weather API          — https://open-meteo.com (open data, CC BY 4.0)
+   - Environment Canada weather      — https://weather.gc.ca (Government of Canada Open Data)
+   - D4H Team Manager API            — https://d4h.com (commercial service, SEASAR credentials required)
+   - CalTopo Team API                — https://caltopo.com (commercial service, SEASAR credentials required)
+   - Azure Active Directory          — https://azure.microsoft.com (SEASAR Microsoft tenant)
+   - Overpass API (OpenStreetMap)    — https://overpass-api.de (ODbL, no bundled data)
+   - OSRM routing                    — https://router.project-osrm.org (public demo server)
 
 ---
 

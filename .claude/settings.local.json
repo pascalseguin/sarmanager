@@ -11,7 +11,8 @@
       "Bash(python3 -m json.tool)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)",
       "Bash(npx tsc *)",
-      "WebFetch(domain:api.team-manager.ca.d4h.com)"
+      "WebFetch(domain:api.team-manager.ca.d4h.com)",
+      "Bash(python3)"
     ]
   }
 }
