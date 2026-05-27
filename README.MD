@@ -34,19 +34,18 @@ All devices — SM laptop, team leader tablet, searcher phone — connect to the
 
 When a call comes in, the SM runs the structured intake wizard, then — with one click — triggers full deployment:
 
-1. **Creates the D4H incident** — named `DD-MMM-YYYY #ID`, populates public description and secure section with all wizard data, weather snapshot at IPP, and coordinates
+1. **Creates the operation in the app** — named `DD-MMM-YYYY #ID`, populates public description and secure section with all wizard data, weather snapshot at IPP, and coordinates
 2. **Creates the CalTopo map** — seeds from your default GeoJSON template, drops IPP/PLS markers, draws ISRID probability rings (25/50/75/95%) for the subject's profile
-3. **Posts the CalTopo link to D4H Whiteboard** as a pinned "Active Search" notice
-4. **Sends a ≤150 character D4H callout** (via D4H/Twilio) to the team
-5. **Pushes the operation to SAR Command Assist** (optional local integration)
+
+4. **Sends a ≤150 character D4H callout** (Twilio) to the team
 
 ---
 
 ## Intake Wizard Steps
 
-1. **Dispatch** — Tasking agency (RCMP, MHPS, AHS, STARS, CJFR, Other), OIC name/phone, operation type, priority, quick tags
+1. **Dispatch** — Tasking agency (RCMP, MHPS), OIC name/phone, operation type, quick tags
 2. **Who** — Subject name, age, sex, clothing, gear, physical description
-3. **Where / When** — PLS and LKP in UTM format (ZoneNumber Letter Easting Northing), times, IPP designation
+3. **Where / When** — PLS and LKP in any format ie. street address, degrees, utm but then it converts to UTM format (ZoneNumber Letter Easting Northing), times, IPP designation
 4. **Condition** — Circumstances, medical condition
 5. **Safety** — Known hazards (free-text + quick tags: avalanche, thin ice, night ops, etc.)
 6. **Profile** — ISRID subject category (hiker, child, dementia, horseback, etc.) and terrain type including Prairie
@@ -68,7 +67,7 @@ When a call comes in, the SM runs the structured intake wizard, then — with on
 | **Weather** | All | Current conditions + 3-day forecast at IPP; EC weather alerts for Alberta |
 | **SAR AB Response** | SM | 18 Alberta SAR groups ranked by drive time from IPP |
 | **Push Update D4H** | SM | Post log entry to D4H incident and whiteboard with quick-fill templates |
-| **Second Callout** | SM | Follow-up D4H/Twilio callout; live response tracker |
+| **Second Callout** | SM | Follow-up DTwilio callout; live response tracker |
 | **Operation Edit** | SM | Edit subject details, clothing, medical, safety, PLS/LKP descriptions |
 
 ---
@@ -104,6 +103,18 @@ At close-out, the operation can be exported as a structured plain-text document 
 - Member attendance (check-in / check-out times)
 - SMEAC briefing content
 - Callout and response summary
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env.local` (gitignored) before running locally, or configure these as App Settings on Azure / environment variables in Docker.
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `CONTACT_EMAIL` | Recommended | Email included in the Nominatim geocoder User-Agent. Nominatim's [ToS](https://nominatim.org/release-docs/latest/api/Search/) require a valid contact address. Defaults to `contact@example.com` if unset. |
+
+All other credentials (D4H API Token, CalTopo Credential ID / Secret / Account ID) are entered by users through the **Settings page** (`/settings`) and stored in their browser's `localStorage`. They are never written to the server or to any config file.
 
 ---
 
@@ -186,6 +197,20 @@ Dockerfile                   Multi-stage container build
 ---
 
 ## Deployment
+
+### Quick start (clone from GitHub)
+
+```bash
+git clone https://github.com/<your-org>/sarmanager.git
+cd sarmanager
+cp .env.example .env.local          # then edit CONTACT_EMAIL
+npm install
+npm run dev                         # http://localhost:3000
+```
+
+Open `/settings` and enter your D4H token and CalTopo credentials. They are saved in your browser only — nothing is written to disk or committed to git.
+
+---
 
 ### Azure App Service (recommended)
 

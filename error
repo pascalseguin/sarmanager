@@ -1,0 +1,84 @@
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A20%5D%3B(node%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.0414916%2C-110.6783661)%3Bway%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.0414916%2C-110.6783661)%3B)%3Bout%20center%201%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A25%5D%3B(node%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bnode%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bnode%5B%22emergency%22%3D%22rescue_station%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bway%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bway%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3B)%3Bout%20center%2010%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A20%5D%3B(node%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.0414916%2C-110.6783661)%3Bway%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.0414916%2C-110.6783661)%3B)%3Bout%20center%201%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A25%5D%3B(node%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bnode%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bnode%5B%22emergency%22%3D%22rescue_station%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bway%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3Bway%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.0414916%2C-110.6783661)%3B)%3Bout%20center%2010%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A20%5D%3B(node%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.038568%2C-110.6666434)%3Bway%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.038568%2C-110.6666434)%3B)%3Bout%20center%201%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A25%5D%3B(node%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bnode%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bnode%5B%22emergency%22%3D%22rescue_station%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bway%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bway%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3B)%3Bout%20center%2010%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A25%5D%3B(node%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bnode%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bnode%5B%22emergency%22%3D%22rescue_station%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bway%5B%22emergency%22%3D%22mountain_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3Bway%5B%22emergency%22%3D%22search_and_rescue%22%5D(around%3A300000%2C50.038568%2C-110.6666434)%3B)%3Bout%20center%2010%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+overpass-api.de/api/interpreter?data=%5Bout%3Ajson%5D%5Btimeout%3A20%5D%3B(node%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.038568%2C-110.6666434)%3Bway%5B%22amenity%22%3D%22hospital%22%5D(around%3A80000%2C50.038568%2C-110.6666434)%3B)%3Bout%20center%201%3B:1 
+        
+        
+       Failed to load resource: the server responded with a status of 406 (Not Acceptable)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)
+localhost:3001/api/caltopo/publish/23bc0d22-9578-492d-a3b5-8b2186f89b35:1 
+        
+        
+       Failed to load resource: the server responded with a status of 400 (Bad Request)

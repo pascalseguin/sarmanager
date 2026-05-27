@@ -8,7 +8,7 @@ export async function GET(req: NextRequest) {
 
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'SARManager/1.0 SAR incident management (pascal@phseguin.ca)' },
+      headers: { 'User-Agent': `SARManager/1.0 SAR incident management (${process.env.CONTACT_EMAIL ?? 'contact@example.com'})` },
     });
     if (!res.ok) throw new Error(`Nominatim ${res.status}`);
     const data = await res.json();

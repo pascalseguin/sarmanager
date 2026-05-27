@@ -11,19 +11,38 @@ MIT LICENSE
 
 The following packages are licensed under the MIT License:
 
-  next@16.2.6                 https://github.com/vercel/next.js
-  react@19.2.4                https://github.com/facebook/react
-  react-dom@19.2.4            https://github.com/facebook/react
-  tailwindcss@^4              https://github.com/tailwindlabs/tailwindcss
-  @tailwindcss/postcss@^4     https://github.com/tailwindlabs/tailwindcss
-  postcss                     https://github.com/postcss/postcss
-  eslint@^9                   https://github.com/eslint/eslint
-  eslint-config-next@16.2.6   https://github.com/vercel/next.js
-  @types/node@^20             https://github.com/DefinitelyTyped/DefinitelyTyped
-  @types/react@^19            https://github.com/DefinitelyTyped/DefinitelyTyped
-  @types/react-dom@^19        https://github.com/DefinitelyTyped/DefinitelyTyped
-  @types/geojson@^7946        https://github.com/DefinitelyTyped/DefinitelyTyped
-  geist                       https://github.com/vercel/geist-font
+  FRAMEWORK & UI
+  next@16.2.6                        https://github.com/vercel/next.js
+  react@19.2.4                       https://github.com/facebook/react
+  react-dom@19.2.4                   https://github.com/facebook/react
+  tailwindcss@^4                     https://github.com/tailwindlabs/tailwindcss
+  @tailwindcss/postcss@^4            https://github.com/tailwindlabs/tailwindcss
+  postcss                            https://github.com/postcss/postcss
+
+  AUTHENTICATION (Azure AD / MSAL)
+  @azure/msal-react                  https://github.com/AzureAD/microsoft-authentication-library-for-js
+  @azure/msal-browser                https://github.com/AzureAD/microsoft-authentication-library-for-js
+
+  DATABASE
+  pg                                 https://github.com/brianc/node-postgres
+  @types/pg                          https://github.com/DefinitelyTyped/DefinitelyTyped
+
+  REAL-TIME
+  socket.io                          https://github.com/socketio/socket.io
+  socket.io-client                   https://github.com/socketio/socket.io
+
+  QR CODES
+  qrcode                             https://github.com/soldair/node-qrcode
+  @types/qrcode                      https://github.com/DefinitelyTyped/DefinitelyTyped
+
+  TOOLING & TYPES
+  eslint@^9                          https://github.com/eslint/eslint
+  eslint-config-next@16.2.6          https://github.com/vercel/next.js
+  @types/node@^20                    https://github.com/DefinitelyTyped/DefinitelyTyped
+  @types/react@^19                   https://github.com/DefinitelyTyped/DefinitelyTyped
+  @types/react-dom@^19               https://github.com/DefinitelyTyped/DefinitelyTyped
+  @types/geojson@^7946               https://github.com/DefinitelyTyped/DefinitelyTyped
+  geist                              https://github.com/vercel/geist-font
 
 MIT LICENSE TEXT:
 
@@ -91,17 +110,38 @@ from these services is bundled with SAR Manager; only API calls are made.
   D4H Team Manager (Canada)
     License:    Commercial — credentials required; governed by SEASAR's
                 D4H service agreement
-    Usage:      Incident creation, personnel callouts, whiteboard notices
+    Usage:      Incident creation, personnel callouts, whiteboard notices,
+                response tracking
     URL:        https://d4h.com
 
   CalTopo
     License:    Commercial — service account credentials required; governed by
                 SEASAR's CalTopo service agreement
-    Usage:      SAR map creation, ISRID probability ring features
+    Usage:      SAR map creation, IPP/PLS markers, ISRID probability ring features
     URL:        https://caltopo.com
 
+  Microsoft Azure Active Directory (Entra ID)
+    License:    Commercial — governed by SEASAR's Microsoft 365 / Azure agreement
+    Usage:      Team member authentication (SSO via MSAL.js)
+    URL:        https://azure.microsoft.com
+
+  Overpass API (OpenStreetMap)
+    License:    Open Database License (ODbL)
+                https://opendatacommons.org/licenses/odbl/
+    Usage:      Nearest hospital and SAR team lookups by coordinates
+    URL:        https://overpass-api.de
+    Note:       No OSM data is bundled or cached by this application; only
+                real-time queries are made.
+
+  OSRM (Open Source Routing Machine) — public demo server
+    License:    BSD 2-Clause (server code); ODbL (road data from OpenStreetMap)
+    Usage:      Drive-time estimates to nearest hospital and SAR teams
+    URL:        https://router.project-osrm.org
+    Note:       Public demo server. For production, consider hosting your own
+                OSRM instance or subscribing to a commercial routing API.
+
   saralberta.ca
-    License:    SAR Alberta member data — referenced as links only, no data
+    License:    SAR Alberta member data — referenced as links only; no data
                 is scraped or cached by this application
     Usage:      Mutual aid team proximity display (hardcoded centroids)
     URL:        https://saralberta.ca
@@ -114,6 +154,11 @@ Production dependencies:
   next@16.2.6                 MIT
   react@19.2.4                MIT
   react-dom@19.2.4            MIT
+  @azure/msal-react           MIT
+  @azure/msal-browser         MIT
+  pg                          MIT
+  socket.io                   MIT
+  qrcode                      MIT
 
 Development / build dependencies:
   typescript@^5               Apache 2.0
@@ -121,10 +166,16 @@ Development / build dependencies:
   @types/react@^19            MIT
   @types/react-dom@^19        MIT
   @types/geojson@^7946.0.16   MIT
+  @types/pg                   MIT
+  @types/qrcode               MIT
   tailwindcss@^4              MIT
   @tailwindcss/postcss@^4     MIT
   eslint@^9                   MIT
   eslint-config-next@16.2.6   MIT
+
+Note: Run `npm ls --depth=0` against the current package.json to confirm
+installed versions. This file reflects the intended dependency set; actual
+installed versions may differ slightly within the specified semver ranges.
 
 ================================================================================
 ATTRIBUTION
@@ -136,8 +187,13 @@ SAR Manager was built using open-source software from:
   - Facebook / Meta and the React community (UI rendering)
   - Microsoft and the TypeScript community (type safety)
   - Tailwind Labs (styling)
+  - Microsoft Azure team (MSAL authentication library)
+  - Brian Carlson and the node-postgres community (database client)
+  - Socket.io contributors (real-time communication)
+  - soldair and qrcode contributors (QR code generation)
   - DefinitelyTyped contributors (type definitions)
   - Open-Meteo contributors (weather data)
+  - OpenStreetMap contributors (hospital/SAR team geographic data via Overpass)
 
 ================================================================================
 COMPLIANCE NOTES
@@ -147,7 +203,10 @@ COMPLIANCE NOTES
 2. When distributing SAR Manager, this LICENSES file must be retained.
 3. No warranty is provided for any third-party components.
 4. For use outside of SEASAR, ensure compliance with each component's license.
-5. Always verify current license terms at the URLs listed above before
-   distributing or modifying this software.
+5. OSRM public demo server is subject to fair-use limits. Consider a dedicated
+   routing service for high-volume production use.
+6. Azure AD integration requires a registered Azure app in the SEASAR tenant.
+   Credentials (client ID, tenant ID) are configured in environment variables,
+   not stored in this repository.
 
 ================================================================================
