@@ -70,9 +70,9 @@ When a call comes in, the SM runs the structured intake wizard, then — with on
 | **Second Callout** | SM | Follow-up DTwilio callout; live response tracker |
 | **Operation Edit** | SM | Edit subject details, clothing, medical, safety, PLS/LKP descriptions |
 
----
+--------------------------------------------------------------------------------------------------------------------------
 
-## Equipment Tracking
+## Equipment Tracking1
 
 Equipment is tracked per operation with:
 - **Tag** (V1, P3, R1.7X…), **Name**, **Brand**, **Serial / Asset #**, **Type**, **Location / Container**
@@ -82,7 +82,8 @@ Equipment is tracked per operation with:
 - JSON bulk import for pre-configured equipment lists
 - Field-editable location and serial fields directly in the list view
 
----
+--------------------------------------------------------------------------------------------------------------------------
+
 
 ## Member Check-In
 
@@ -92,7 +93,7 @@ Equipment is tracked per operation with:
 - One-click check-in from D4H roster or registered team members
 - Last-heard status tracking: green < 45 min, yellow 45–60 min, red > 60 min (ICS standard)
 
----
+--------------------------------------------------------------------------------------------------------------------------
 
 ## Incident Report Export
 
