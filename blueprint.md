@@ -418,8 +418,344 @@ Injected automatically into all operation API responses as `lkp_utm`, `pls_utm`,
 
 ## 5. Gap List
 
-- No gear/equipment tracking
 - No PDF/report generation
 - No map search segment tracking
 - Sync routes (`/api/sync`) are stubbed — `sync_log` table and `sync_version` exist but no implementation
-- Ground Searcher mobile view not yet implemented (3-tab: My Tasks, QR Scanner, SMEAC/Weather)
+
+---
+
+## 6. Searcher Check-In & Logistics Module
+
+**Status: Implemented (Electron app)**  
+**Component:** `frontend/src/components/SearcherCheckIn.tsx`  
+**Backend routes:** `src/routes/checkin.ts` → mounted at `/api/checkin` (no auth required)  
+**DB tables:** `vehicle_claims`, `searcher_checkins`  
+**Entry point:** "👤 Searcher Check-In" button in the IncidentBase top bar
+
+### Flow (6 steps)
+
+| Step | Name | What happens |
+|---|---|---|
+| 0 | **Auth Gate** | 3-way match: first name + last name + last 7 digits of phone against local `personnel` table |
+| 1 | **Qualification Review** | Show qualifications on file; confirm accuracy. Inaccuracy flagged to SM via `events` log |
+| 2 | **Fitness & Availability** | Toggle fit/restricted; set drop-dead time. 4-Hour Rule: if runtime < 4h OR restricted → driver slot locked |
+| 3 | **Vehicle Manifest** | List vehicles from D4H equipment API (type=vehicle). Atomic driver claim (mutex via `vehicle_claims` table). Max 4 passengers per vehicle. "Attend IPP Direct" fallback |
+| 4 | **Driver Inspection** | Drivers only — 10-item pre-departure checklist. On submit: POST to D4H `/equipment-inspection-results` + local event log |
+| 5 | **Dashboard** | Team assignment, CalTopo map link, weather at IPP, SMEAC briefing (copyable) |
+
+### API endpoints (`/api/checkin/`)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/auth` | None | 3-way roster match → returns personnel + quals |
+| GET | `/vehicles?operationId=` | None | Vehicle list with claim status |
+| POST | `/vehicles/claim-driver` | None | Atomic driver slot claim |
+| POST | `/vehicles/claim-passenger` | None | Add passenger (max 4) |
+| DELETE | `/vehicles/claim/:claimId` | None | Release claim |
+| POST | `/attendance` | None | Record fitness/time; sync to D4H attendance if D4H token configured |
+| POST | `/inspection` | None | Submit driver checklist; POST to D4H inspection results |
+| GET | `/dashboard?operationId=&personnelId=` | None | Team, CalTopo URL, SMEAC, IPP coords for weather |
+| GET | `/list?operationId=` | None | All check-ins + vehicle claims for SM view |
+
+### D4H integration
+
+- **Attendance:** `POST /v3/team/{teamId}/attendance` — records `ATTENDING` status with `startsAt`/`endsAt` from drop-dead time
+- **Inspection:** `POST /v3/team/{teamId}/equipment-inspection-results` — logs checklist completion against vehicle equipment ID
+- **Vehicles:** `GET /v3/team/{teamId}/equipment` — filtered by title/category containing "vehicle", "truck", "van", "utv", "atv"
+- All D4H calls are non-fatal — wizard proceeds even if D4H is unconfigured or unreachable
+
+
+# D4H Team Manager Integration: System Architecture Scope
+
+This document serves as the technical scope and architectural blueprint for the engineering team and system designers to implement the custom emergency response workflow using the [Team Manager API](https://api.team-manager.us.d4h.com/v3/docs?_gl=1*crfohl*_gcl_au*MTM3OTI2NTc4OS4xNzc4NzY1OTU1#section/Introduction).
+
+---
+
+## I. System Interaction Topography
+
+```
+                    ┌────────────────────────┐
+                    │ Custom Application     │
+                    │ (Incident Command App) │
+                    └───────────┬────────────┘
+                                │
+        ┌───────────────────────┼───────────────────────┐
+        │ [HTTPS POST/PATCH]    │ [HTTPS GET]           │ [HTTPS POST]
+        ▼                       ▼                       ▼
+┌──────────────┐        ┌──────────────┐        ┌──────────────┐
+│  Incidents   │        │ Roster Sync  │        │ Logistics &  │
+│  & Rosters   │        │ (Directory)  │        │ Inspections  │
+└──────┬───────┘        └──────┬───────┘        └──────┬───────┘
+       │                       │                       │
+       └───────────────────────┼───────────────────────┘
+                               ▼
+                ┌────────────────────────┐
+                │ D4H Team Manager Engine│
+                │     (v3 REST API)      │
+                └────────────────────────┘
+
+```
+
+---
+
+## II. Data Transformation & Mapping Pipelines
+
+The custom application must filter out bloated API response payloads to minimize footprint and maintain focus on the specific attributes requested by the Incident Commander:
+
+### 1. Member Operations Pipeline
+
+```
+[D4H /members Engine] ──► (Filter & Map Context) ──► [App Core Directory Data Matrix]
+                                                          │
+                                                          ├─► Identity: name
+                                                          ├─► Contact: phone (customFieldValues)
+                                                          └─► Skills: qualifications (nested titles)
+
+```
+
+### 2. Inspection Logistics Pipeline
+
+```
+[D4H /equipment-usages] ──► (Run One-Time Import Filter) ──► [App Logistics Database]
+                                                                  │
+                                                                  ├─► ID: equipment.id
+                                                                  ├─► Reference: equipment.ref
+                                                                  ├─► Zone: equipment.location.title
+                                                                  └─► Status: equipment.status
+
+```
+
+---
+
+## III. API Endpoint Blueprint & Orchestration Data
+
+### 1. Member Directory Matrix Sync
+
+* **Target Interface:** `GET /v3/{context}/{contextId}/search` or `GET /v3/{context}/{contextId}/members`
+* **Filter Rule:** Extract only `name`, nested `qualifications`, and contact metrics from `customFieldValues`.
+
+#### Payload Profile
+
+```json
+{
+  "id": 842,
+  "name": "Alex Mercer",
+  "phone": "+15550192834",
+  "qualifications": ["Hazmat Technician", "Swiftwater Rescue Level II"]
+}
+
+```
+
+### 2. Incident Command Center Interface
+
+Allows the Incident Commander to initialize and adapt operational properties dynamically throughout the lifecycle of an incident.
+
+#### A. Incident Initialization
+
+* **Target Interface:** `POST /v3/{context}/{contextId}/incidents`
+
+```json
+{
+  "title": "Structure Fire - Sector 4",
+  "description": "Commercial warehouse fire with active structural compromise.",
+  "status": "ACTIVE"
+}
+
+```
+
+#### B. Dynamic Incident Updates
+
+* **Target Interface:** `PATCH /v3/{context}/{contextId}/incidents/{incidentId}`
+* **Purpose:** Updates fields or notes based on live command inputs.
+
+### 3. Roster Deployment & Timeline Updates
+
+Logs who is actively attending an incident and modifies their operational timeframe.
+
+* **Target Interface:** `POST /v3/team/{teamId}/attendance` (or `PATCH` for live tracking updates)
+
+```json
+{
+  "activityId": 5501,
+  "memberId": 842,
+  "status": "ATTENDING",
+  "startsAt": "2026-05-31T12:00:00.000Z",
+  "endsAt": "2026-05-31T18:30:00.000Z"
+}
+
+```
+
+### 4. Direct Operations Broadcast (Whiteboard)
+
+Replaces standard SMS/Email notifications by pinning team-wide messages to the dashboard.
+
+* **Target Interface:** `POST /v3/{context}/{contextId}/whiteboard`
+
+```json
+{
+  "text": "COMMAND BROADCAST: Shift rotation scheduled for 1800. All Sector 4 units check in with staging.",
+  "important": true
+}
+
+```
+
+### 5. Equipment Logistics & Condition Tracking
+
+Handles the inventory tracking snapshot and pushes new inspection parameters down to the asset profile.
+
+#### A. One-Time Inventory Import Snapshot
+
+* **Target Interface:** `GET /v3/{context}/{contextId}/equipment-usages`
+* **Parsing Rule:** Iterate over items and index them according to `location.title`.
+
+#### B. Append New Inspection Parameters
+
+* **Target Interface:** `POST /v3/{context}/{contextId}/equipment-inspection-results`
+
+```json
+{
+  "equipmentId": 1402,
+  "status": "OPERATIONAL",
+  "notes": "Apparatus pressure tested and certified for immediate deployment.",
+  "inspectedAt": "2026-05-31T12:45:00.000Z"
+}
+
+```
+
+---
+
+## IV. Core Engineering Rules & Constraints
+
+> [!IMPORTANT]
+> 1. **Timeframe Format Constraints:** Every timestamp submitted to `startsAt`, `endsAt`, or `inspectedAt` fields must match the ISO 8601 UTC standard structure (`YYYY-MM-DDTHH:MM:SS.SSSZ`).
+> 2. **API Penalty Window Control:** D4H implements an accumulative slowdown constraint when processing high-frequency data bursts. For the initial **One-Time Equipment Sync**, batch requests dynamically or implement query pagination parameters (`size=100`) to remain clear of the rate limit.
+> 
+># Searcher Check-In & Logistics Deployment Module Blueprint
+
+This blueprint outlines the requirements for the **Field Searcher Mobile Check-In Workflow** within the Search and Rescue (SAR) Dispatch and Management Application. It defines the validation logic, workflow steps, and state mutations required to feed back into the [Team Manager API](https://api.team-manager.us.d4h.com/v3/docs?_gl=1*crfohl*_gcl_au*MTM3OTI2NTc4OS4xNzc4NzY1OTU1#section/Introduction) ecosystem.
+
+---
+
+## I. Module State Machine & Flow
+
+```
+   [ SMS Link Clicked ]
+             │
+             ▼
+   [ Authentication Gate ] ◄─── Validate: First Name + Last Name + Phone Number
+             │
+             ▼
+   [ 1. Qualification Review ]
+             │
+             ▼
+   [ 2. Fitness & Availability ] ─── Capture: Drop-Dead Time & Medical Restrictions
+             │
+             ├──► If Availability < 4 Hours ───► [ Auto-Route to IPP ] ──┐
+             │                                                           │
+             └──► If Availability ≥ 4 Hours ─────────────────────────────┼─► [ 3. Vehicle Manifest ]
+                                                                         │   (Driver / Passenger / Direct IPP)
+             ┌───────────────────────────────────────────────────────────┘
+             ▼
+   [ 4. Driver Inspection Checklist ] (Drivers Only)
+             │
+             ▼
+   [ 5. Searcher Operational Dashboard ]
+
+```
+
+---
+
+## II. Step-by-Step Technical Requirements
+
+### Step 0: Authentication Gate (3-Way Match)
+
+* **Action:** Searcher inputs First Name, Last Name, and Mobile Phone Number.
+* **Logic:** Match input against the pre-cached operational roster snapshot pulled from the `Member` records.
+* **Constraint:** All 3 parameters must match identically. If successful, bind the session to the local `memberId`.
+
+### Step 1: Qualification Review
+
+* **Interface:** Present a clean list of the searcher's active credentials retrieved via the API.
+* **Action:** Interactive "Confirm Qualifications are Accurate" checkbox.
+* **Failure State:** If inaccurate, provide an optional text field flag that logs a notification to the Search Manager via the whiteboard or incident notes.
+
+### Step 2: Fitness & Attendance Windows
+
+* **Data Capture:**
+* **Fitness Status:** Toggle button (`Fit for Field Deployment` / `Restricted: Support/Base Operations Only`).
+* **Drop-Dead Time:** Absolute time picker indicating when the searcher must depart the scene.
+
+
+* **Business Logic Gate (The 4-Hour Rule):**
+* Calculate total available runtime: $\text{Runtime} = \text{Drop-Dead Time} - \text{Current Time}$.
+* If $\text{Runtime} < 4\text{ hours}$ OR $\text{Fitness Status} == \text{Restricted}$, **hard-lock** the Driver option in Step 3. Force route them to Passenger or direct-to-Initial Planning Point (IPP).
+
+
+
+### Step 3: Vehicle Manifest & Logistics Loop
+
+* **Context:** Vehicles are queried as `Equipment` resources where `type == "VEHICLE"`.
+* **State Management:**
+1. **Driver Assignment:** Filter for deployed vehicles missing an assigned driver. If a vehicle is unassigned, the searcher can claim it.
+2. **Concurrency Lock (Mutex):** As soon as a member claims a driver slot, that vehicle profile must instantly lock out other users, registering the current user as the driver.
+3. **Passenger Assignment:** Once a vehicle has a confirmed driver, unlock its 4 available passenger slots for other field searchers.
+4. **Fallback:** Searchers may choose to bypass the vehicle pool entirely and select "Attend IPP Direct."
+
+
+* **UI Indicator:** Display a persistent, sticky **Expected Departure Time** countdown clock in the upper right-hand corner based on the incident metadata.
+
+### Step 4: Driver Pre-Departure Inspection
+
+* **Condition:** Triggered *only* if the searcher was assigned as a **Driver** in Step 3.
+* **Action:** Render the rapid-fire vehicle safety checklist.
+* **API Integration:** Upon successful submission, compile the checklist results and send an HTTP payload to register the verification:
+* **Endpoint:** `POST /v3/{context}/{contextId}/equipment-inspection-results`
+
+
+
+### Step 5: Searcher Operational Dashboard
+
+Upon completing the check-in pipeline, route the searcher to their live mission feed. This view must parse and display:
+
+* **Team Assignment:** Current operational status.
+* **Live Environmental Metrics:** Local weather widget based on incident coordinate strings.
+* **Mapping Link:** Direct button redirection out to the external **CalTopo Map URL**.
+* **Operational Briefing:** Text block cleanly formatting the Search Manager's **SMEAC Briefing**.
+* **Logistics Engine:** Access point allowing the searcher to scan, inspect, and check out individual rescue gear items using the `equipment-usages` endpoints.
+
+---
+
+## III. API Data Payload Models
+
+### 1. Attendance Frame Logging
+
+When a searcher completes Step 2, update their active assignment window using the [Activity Attendance Engine](https://api.team-manager.us.d4h.com/v3/docs?_gl=1*crfohl*_gcl_au*MTM3OTI2NTc4OS4xNzc4NzY1OTU1#section/Introduction) endpoints:
+
+* **Interface:** `POST /v3/team/{teamId}/attendance`
+
+```json
+{
+  "activityId": 7702,
+  "memberId": 842,
+  "status": "ATTENDING",
+  "startsAt": "2026-05-31T13:15:00.000Z",
+  "endsAt": "2026-05-31T17:15:00.000Z"
+}
+
+```
+
+### 2. Vehicle Inspection Manifest Submissions
+
+When a driver passes the pre-departure checklist in Step 4, append the outcome straight to the vehicle asset:
+
+* **Interface:** `POST /v3/{context}/{contextId}/equipment-inspection-results`
+
+```json
+{
+  "equipmentId": 409,
+  "status": "OPERATIONAL",
+  "notes": "Pre-departure mobile safety checklist completed by driver. Vehicle cleared for field transit.",
+  "inspectedAt": "2026-05-31T13:22:15.000Z"
+}
+
+```
