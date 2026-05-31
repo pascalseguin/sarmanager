@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { operationsStore, Operation } from '@/lib/operations-store';
 import { parseUTMString, formatUTM } from '@/lib/utm';
 import { ISRID } from '@/lib/isrid';
+import { useSettings } from '@/lib/settings-context';
 
 interface Props {
   onCreated: (op: Operation) => void;
@@ -32,11 +33,12 @@ function parseLatLon(input: string): { lat: number; lon: number } | null {
   return { lat, lon };
 }
 
-function CoordField({ label, value, onChange, required }: {
+function CoordField({ label, value, onChange, required, apiKey }: {
   label: string;
   value: string;
   onChange: (utmRaw: string, parsed: { lat: number; lon: number } | null) => void;
   required?: boolean;
+  apiKey?: string;
 }) {
   const [mode, setMode] = useState<CoordMode>('utm');
   const [latlonInput, setLatlonInput] = useState('');
@@ -68,7 +70,9 @@ function CoordField({ label, value, onChange, required }: {
     setGeocoding(true);
     setResults([]);
     try {
-      const res = await fetch(`/api/geocode?q=${encodeURIComponent(addressInput)}`);
+      const params = new URLSearchParams({ q: addressInput });
+      if (apiKey?.trim()) params.set('key', apiKey.trim());
+      const res = await fetch(`/api/geocode?${params}`);
       if (res.ok) setResults((await res.json()).slice(0, 5));
     } finally {
       setGeocoding(false);
@@ -226,6 +230,7 @@ const STEPS = [
 ];
 
 export default function OperationIntake({ onCreated, onCancel }: Props) {
+  const { settings } = useSettings();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<FormState>(blank());
   const [saving, setSaving] = useState(false);
@@ -507,7 +512,8 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
                 className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <CoordField label="PLS Coordinates (UTM)" value={form.pls_utm}
-              onChange={(raw, parsed) => { set('pls_utm', raw); set('pls_lat', parsed?.lat ?? null); set('pls_lon', parsed?.lon ?? null); }} />
+              onChange={(raw, parsed) => { set('pls_utm', raw); set('pls_lat', parsed?.lat ?? null); set('pls_lon', parsed?.lon ?? null); }}
+              apiKey={settings.hereApiKey} />
           </div>
 
           <div className="border-t pt-4">
@@ -520,7 +526,8 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
                 className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <CoordField label="LKP Coordinates (UTM)" value={form.lkp_utm}
-              onChange={(raw, parsed) => { set('lkp_utm', raw); set('latitude', parsed?.lat ?? null); set('longitude', parsed?.lon ?? null); }} />
+              onChange={(raw, parsed) => { set('lkp_utm', raw); set('latitude', parsed?.lat ?? null); set('longitude', parsed?.lon ?? null); }}
+              apiKey={settings.hereApiKey} />
           </div>
 
           <div className="border-t pt-4">

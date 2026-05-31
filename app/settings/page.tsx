@@ -11,6 +11,7 @@ export default function SettingsPage() {
     accountId: settings.accountId,
     folderId: settings.folderId,
     d4hToken: settings.d4hToken,
+    hereApiKey: settings.hereApiKey,
   });
   const [saved, setSaved] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -62,6 +63,20 @@ export default function SettingsPage() {
         <form onSubmit={handleSave} className="bg-white p-6 rounded shadow space-y-2">
           <h2 className="text-lg font-semibold text-gray-700 mb-4">D4H</h2>
           {field('API Token', 'd4hToken', 'password', 'Found in D4H Team Manager → Account → API. Used for incidents, whiteboard, and callouts.')}
+
+          <hr className="my-4 border-gray-200" />
+          <h2 className="text-lg font-semibold text-gray-700 mb-2">HERE Geocoding</h2>
+          <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-900 leading-relaxed">
+            <p className="font-medium mb-1">How to get your free HERE API key</p>
+            <ol className="list-decimal list-inside space-y-1 text-blue-800">
+              <li>Go to <a href="https://developer.here.com/sign-up" target="_blank" rel="noopener noreferrer" className="underline font-medium hover:text-blue-600">developer.here.com/sign-up</a> and create a free account (no credit card required)</li>
+              <li>After logging in, click <strong>Create project</strong> and give it any name</li>
+              <li>Inside the project, click <strong>REST</strong> → <strong>Create API key</strong></li>
+              <li>Copy the key and paste it below</li>
+            </ol>
+            <p className="mt-2 text-blue-700 text-xs">Free tier: up to 1,000 geocoding requests per day — more than sufficient for SAR use. No credit card needed.</p>
+          </div>
+          {field('HERE API Key', 'hereApiKey', 'password', 'Used for address-to-coordinate lookup during operation intake. Falls back to OpenStreetMap if not set.')}
 
           <hr className="my-4 border-gray-200" />
           <h2 className="text-lg font-semibold text-gray-700 mb-4">CalTopo Service Account</h2>
