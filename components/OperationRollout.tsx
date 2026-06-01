@@ -268,10 +268,6 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         description: buildD4HDescription(op),
         latitude: ippLat,
         longitude: ippLon,
-        tags: op.tags ?? [],
-        customFields: {
-          secure_notes: buildD4HSecureContent(op, weatherSummary, caltopoUrl),
-        },
       });
 
       // Rename with actual D4H ID
@@ -391,10 +387,11 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
     setStatus('callout', 'running');
     try {
       const msg = buildCalloutSMS(op);
-      const { calloutId } = await callD4H('sendCallout', {
-        message: msg,
-        incidentId: op.d4h_incident_id ?? auto.d4hIncidentId,
-      });
+      // Read fresh op from store — runD4HIncident saves d4h_incident_id synchronously
+      // to localStorage before this runs, so the stale `op` prop is bypassed.
+      const freshOp = operationsStore.get(op.id);
+      const incidentId = freshOp?.d4h_incident_id ?? op.d4h_incident_id;
+      const { calloutId } = await callD4H('sendCallout', { message: msg, incidentId });
       const updated = operationsStore.update(op.id, { d4h_callout_id: String(calloutId) });
       if (updated) onUpdated(updated);
       setStatus('callout', 'done', { calloutId: String(calloutId) });
@@ -1045,15 +1042,7 @@ function D4HUpdatePanel({ op, callD4H, d4hConfigured }: { op: Operation; callD4H
     if (!message.trim()) return;
     setPosting(true); setError('');
     try {
-      if (op.d4h_incident_id) {
-        await callD4H('postUpdate', { incidentId: op.d4h_incident_id, message: message.trim() });
-      }
-      // Also post to whiteboard as a pinned notice
-      await callD4H('postWhiteboard', {
-        title: `Update — ${new Date().toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' })}`,
-        content: message.trim(),
-        pinned: false,
-      });
+      await callD4H('postUpdate', { incidentId: op.d4h_incident_id, message: message.trim() });
       setLastPosted(new Date().toLocaleTimeString('en-CA'));
       setMessage('');
     } catch (e: unknown) {
@@ -1277,8 +1266,9 @@ function SecondCalloutPanel({ op, callD4H, d4hConfigured, defaultSMS }: {
           ) : (
             <div className="space-y-2">
               {responses.map(r => {
-                const isYes = r.status === '1' || r.status === 'attending' || r.status === 'yes';
-                const isNo = r.status === 'no' || r.status === 'unavailable';
+                const s = r.status.toUpperCase();
+                const isYes = s === 'ATTENDING' || s === '1' || s === 'YES';
+                const isNo = s === 'ABSENT' || s === 'NO' || s === 'UNAVAILABLE';
                 return (
                   <div key={r.id} className="flex items-center justify-between p-2 rounded-lg bg-gray-50">
                     <span className="text-sm text-gray-700">{r.name}</span>
@@ -1289,9 +1279,9 @@ function SecondCalloutPanel({ op, callD4H, d4hConfigured, defaultSMS }: {
                 );
               })}
               <div className="text-xs text-gray-600 pt-1">
-                {responses.filter(r => r.status === '1' || r.status === 'attending' || r.status === 'yes').length} attending ·{' '}
-                {responses.filter(r => r.status === 'no' || r.status === 'unavailable').length} unavailable ·{' '}
-                {responses.filter(r => !['1', 'attending', 'yes', 'no', 'unavailable'].includes(r.status)).length} pending
+                {responses.filter(r => ['ATTENDING', '1', 'YES'].includes(r.status.toUpperCase())).length} attending ·{' '}
+                {responses.filter(r => ['ABSENT', 'NO', 'UNAVAILABLE'].includes(r.status.toUpperCase())).length} absent ·{' '}
+                {responses.filter(r => !['ATTENDING', '1', 'YES', 'ABSENT', 'NO', 'UNAVAILABLE'].includes(r.status.toUpperCase())).length} pending
               </div>
             </div>
           )}

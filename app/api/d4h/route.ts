@@ -30,14 +30,27 @@ const teamIdCache = new Map<string, number>();
 async function getTeamId(token: string): Promise<number> {
   if (teamIdCache.has(token)) return teamIdCache.get(token)!;
   const data = await d4hFetch(token, '/v3/whoami');
-  const contexts: Array<{ context: string; contextId: number }> = data?.data ?? [];
-  const team = Array.isArray(contexts) ? contexts.find(c => c.context === 'team') : null;
-  if (!team?.contextId) {
+
+  // v3 API response: { members: [{ owner: { id, resourceType: "Team" } }] }
+  let teamId: number | undefined;
+  const members: Array<{ owner?: { id?: number; resourceType?: string } }> = data?.members ?? [];
+  const teamMember = members.find(m => m?.owner?.resourceType === 'Team');
+  if (teamMember?.owner?.id) {
+    teamId = teamMember.owner.id;
+  }
+  // Fallback: legacy { data: [{ context: 'team', contextId }] }
+  if (!teamId) {
+    const contexts: Array<{ context: string; contextId: number }> = data?.data ?? [];
+    const teamCtx = Array.isArray(contexts) ? contexts.find(c => c.context === 'team') : null;
+    if (teamCtx?.contextId) teamId = teamCtx.contextId;
+  }
+
+  if (!teamId) {
     throw new Error(`Cannot find team ID — /v3/whoami returned: ${JSON.stringify(data).slice(0, 200)}`);
   }
-  teamIdCache.set(token, team.contextId);
-  logInfo('d4h', `Resolved teamId=${team.contextId}`);
-  return team.contextId;
+  teamIdCache.set(token, teamId);
+  logInfo('d4h', `Resolved teamId=${teamId}`);
+  return teamId;
 }
 
 export async function POST(req: NextRequest) {
@@ -56,9 +69,15 @@ export async function POST(req: NextRequest) {
     if (action === 'createIncident') {
       const { title, description, latitude, longitude } = body;
       const teamId = await getTeamId(token);
-      const payload: Record<string, unknown> = { title, description };
-      if (latitude != null) payload.latitude = latitude;
-      if (longitude != null) payload.longitude = longitude;
+      const payload: Record<string, unknown> = {
+        referenceDescription: title,
+        description,
+        fullTeam: true,
+        startsAt: new Date().toISOString(),
+      };
+      if (latitude != null && longitude != null) {
+        payload.location = { latitude, longitude };
+      }
 
       const data = await d4hFetch(token, `/v3/team/${teamId}/incidents`, 'POST', payload);
       const incidentId = data?.data?.id ?? data?.id;
@@ -70,7 +89,7 @@ export async function POST(req: NextRequest) {
       const { incidentId, title, description } = body;
       const teamId = await getTeamId(token);
       const payload: Record<string, unknown> = {};
-      if (title !== undefined) payload.title = title;
+      if (title !== undefined) payload.referenceDescription = title;
       if (description !== undefined) payload.description = description;
       const data = await d4hFetch(token, `/v3/team/${teamId}/incidents/${incidentId}`, 'PATCH', payload);
       return NextResponse.json({ incident: data?.data ?? data });
@@ -78,48 +97,47 @@ export async function POST(req: NextRequest) {
 
     // ── Post to whiteboard ────────────────────────────────────────────────────
     if (action === 'postWhiteboard') {
-      const { title, content } = body;
+      const { title, content, pinned } = body;
       const teamId = await getTeamId(token);
+      const text = title ? `${title}\n${content ?? ''}` : (content ?? '');
       const data = await d4hFetch(token, `/v3/team/${teamId}/whiteboard`, 'POST', {
-        title,
-        description: content,
+        text,
+        important: pinned ?? false,
       });
       return NextResponse.json({ noteId: data?.data?.id ?? data?.id });
     }
 
-    // ── Send callout ──────────────────────────────────────────────────────────
+    // ── Send callout (publish incident → triggers D4H Twilio SMS) ────────────
     if (action === 'sendCallout') {
-      const { message, incidentId } = body;
+      const { incidentId } = body;
       const teamId = await getTeamId(token);
-      const trimmed = message.slice(0, 150);
-      const payload: Record<string, unknown> = { message: trimmed };
-      if (incidentId) payload.activityId = Number(incidentId);
-
-      const data = await d4hFetch(token, `/v3/team/${teamId}/duty/callouts`, 'POST', payload);
-      return NextResponse.json({ calloutId: data?.data?.id ?? data?.id });
+      if (!incidentId) throw new Error('incidentId required to publish callout');
+      const data = await d4hFetch(token, `/v3/team/${teamId}/incidents/${incidentId}/publish`, 'POST', { published: true });
+      return NextResponse.json({ calloutId: String(incidentId), data: data?.data ?? data });
     }
 
     // ── Get members ───────────────────────────────────────────────────────────
     if (action === 'getMembers') {
       const teamId = await getTeamId(token);
-      const data = await d4hFetch(token, `/v3/team/${teamId}/members?limit=500`);
+      const data = await d4hFetch(token, `/v3/team/${teamId}/members?size=500`);
       return NextResponse.json({ members: data?.data ?? data?.results ?? [] });
     }
 
-    // ── Get callout responses ─────────────────────────────────────────────────
+    // ── Get callout responses (attendance for the incident activity) ──────────
     if (action === 'getCalloutResponses') {
       const { calloutId } = body;
       const teamId = await getTeamId(token);
-      const data = await d4hFetch(token, `/v3/team/${teamId}/duty/callouts/${calloutId}/responses`);
+      const data = await d4hFetch(token, `/v3/team/${teamId}/attendance?activity_id=${calloutId}&size=200`);
       return NextResponse.json({ responses: data?.data ?? [] });
     }
 
-    // ── Post incident update / log entry ──────────────────────────────────────
+    // ── Post incident update (appends to whiteboard; no dedicated update endpoint in D4H v3) ──
     if (action === 'postUpdate') {
       const { incidentId, message } = body;
       const teamId = await getTeamId(token);
-      // Note: if this 404s, D4H v3 may not expose incident log entries via API
-      const data = await d4hFetch(token, `/v3/team/${teamId}/incidents/${incidentId}/updates`, 'POST', { message });
+      const label = `Update — ${new Date().toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' })}`;
+      const text = incidentId ? `[Incident #${incidentId}] ${label}\n${message}` : `${label}\n${message}`;
+      const data = await d4hFetch(token, `/v3/team/${teamId}/whiteboard`, 'POST', { text, important: false });
       return NextResponse.json({ updateId: data?.data?.id ?? data?.id });
     }
 
