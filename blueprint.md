@@ -758,4 +758,4 @@ When a driver passes the pre-departure checklist in Step 4, append the outcome s
   "inspectedAt": "2026-05-31T13:22:15.000Z"
 }
 
-```
+```'
