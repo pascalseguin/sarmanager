@@ -44,6 +44,8 @@ export interface Operation {
   caltopo_map_url?: string;
   // D4H
   d4h_incident_id?: string;
+  d4h_exercise_id?: string;
+  d4h_activity_type?: 'incident' | 'exercise';
   d4h_callout_id?: string;
   // Deploy
   deploy_decision?: 'yes' | 'no' | null;
@@ -52,6 +54,8 @@ export interface Operation {
   weather_snapshot?: string;
   // Tags
   tags?: string[];
+  // Deployed equipment (D4H equipment item IDs selected at operation creation)
+  deployed_equipment_ids?: number[];
 }
 
 const KEY = 'sarmanager_operations';

@@ -1,10 +1,23 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { operationsStore, Operation } from '@/lib/operations-store';
 import { parseUTMString, formatUTM } from '@/lib/utm';
 import { ISRID } from '@/lib/isrid';
 import { useSettings } from '@/lib/settings-context';
+
+// ── Equipment preset helpers ──────────────────────────────────────────────────
+
+const PRESETS_KEY = 'sarmanager_eq_presets';
+
+function loadPresets(): Record<string, number[]> {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) ?? '{}'); } catch { return {}; }
+}
+function savePresets(p: Record<string, number[]>) {
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(p));
+}
+
+interface D4HEqItem { id: number; title: string; ref?: string; category?: { title?: string } }
 
 interface Props {
   onCreated: (op: Operation) => void;
@@ -215,18 +228,29 @@ function blank() {
     safety_concerns: '',
     subject_category: '',
     name: '',
+    deployed_equipment_ids: [] as number[],
+    // D4H step
+    d4h_activity_type: 'incident' as 'incident' | 'exercise',
+    d4h_mode: 'create' as 'create' | 'link',
+    d4h_existing_id: '',
+    d4h_title: '',
+    d4h_description: '',
+    d4h_starts_at: '',
+    d4h_ends_at: '',
   };
 }
 
 type FormState = ReturnType<typeof blank>;
 
 const STEPS = [
-  { id: 'dispatch', label: 'Dispatch',    title: 'Dispatch Details' },
-  { id: 'who',      label: 'WHO',         title: 'Who Are We Looking For?' },
-  { id: 'where',    label: 'WHERE/WHEN',  title: 'Where & When' },
-  { id: 'what',     label: 'CONDITION',   title: 'Condition & Circumstance' },
-  { id: 'safety',   label: 'SAFETY',      title: 'Safety Concerns' },
-  { id: 'profile',  label: 'PROFILE',     title: 'Lost Person Behaviour Profile' },
+  { id: 'dispatch',  label: 'Dispatch',   title: 'Dispatch Details' },
+  { id: 'who',       label: 'WHO',        title: 'Who Are We Looking For?' },
+  { id: 'where',     label: 'WHERE/WHEN', title: 'Where & When' },
+  { id: 'what',      label: 'CONDITION',  title: 'Condition & Circumstance' },
+  { id: 'safety',    label: 'SAFETY',     title: 'Safety Concerns' },
+  { id: 'profile',   label: 'PROFILE',    title: 'Lost Person Behaviour Profile' },
+  { id: 'd4h',       label: 'D4H',        title: 'D4H Incident / Exercise' },
+  { id: 'equipment', label: 'EQUIPMENT',  title: 'Deployable Equipment' },
 ];
 
 export default function OperationIntake({ onCreated, onCancel }: Props) {
@@ -235,6 +259,76 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
   const [form, setForm] = useState<FormState>(blank());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  // Equipment fetch (lazy — loads when SM reaches the equipment step)
+  const [equipment, setEquipment] = useState<D4HEqItem[]>([]);
+  const [eqLoading, setEqLoading] = useState(false);
+  const [eqError, setEqError] = useState('');
+  const [presets, setPresets] = useState<Record<string, number[]>>(loadPresets);
+  const [newPresetName, setNewPresetName] = useState('');
+
+  // ── Auto-populate D4H fields when reaching step 6 ────────────────────────
+  useEffect(() => {
+    if (step !== 6) return;
+    const d = new Date().toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' })
+      .replace(',', '').replace(/ /g, '-').toUpperCase();
+    if (!form.d4h_title) {
+      const title = `${d} — ${form.lost_person_name || 'Missing Person'}`;
+      set('d4h_title', title);
+      if (!form.name) set('name', title);
+    }
+    if (!form.d4h_description) {
+      const parts: string[] = [];
+      if (form.lost_person_name) {
+        parts.push(`Missing ${[form.lost_person_age ? `${form.lost_person_age}y` : '', form.subject_sex, form.lost_person_name].filter(Boolean).join(' ')}.`);
+      }
+      if (form.subject_circumstance) parts.push(`Circumstance: ${form.subject_circumstance.slice(0, 300)}`);
+      if (form.tasking_agency)      parts.push(`Tasking: ${form.tasking_agency}`);
+      if (form.oic_name)            parts.push(`OIC: ${form.oic_name}`);
+      set('d4h_description', parts.join('\n'));
+    }
+    if (!form.d4h_starts_at) {
+      set('d4h_starts_at', form.pls_time?.slice(0, 16) ?? new Date().toISOString().slice(0, 16));
+    }
+  }, [step]);
+
+  // ── Load D4H equipment when reaching step 7 ───────────────────────────────
+  useEffect(() => {
+    if (step !== 7 || !settings.d4hToken || equipment.length > 0) return;
+    setEqLoading(true); setEqError('');
+    fetch('/api/d4h', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'getEquipment', token: settings.d4hToken }),
+    })
+      .then(r => r.json())
+      .then(d => setEquipment(d.equipment ?? []))
+      .catch(() => setEqError('Could not load equipment from D4H'))
+      .finally(() => setEqLoading(false));
+  }, [step]);
+
+  function toggleEquipment(id: number) {
+    const cur = form.deployed_equipment_ids;
+    set('deployed_equipment_ids', cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
+  }
+
+  function applyPreset(ids: number[]) {
+    set('deployed_equipment_ids', ids);
+  }
+
+  function savePreset() {
+    if (!newPresetName.trim() || !form.deployed_equipment_ids.length) return;
+    const updated = { ...presets, [newPresetName.trim()]: form.deployed_equipment_ids };
+    savePresets(updated);
+    setPresets(updated);
+    setNewPresetName('');
+  }
+
+  function deletePreset(name: string) {
+    const { [name]: _, ...rest } = presets;
+    savePresets(rest);
+    setPresets(rest);
+  }
 
   const set = <K extends keyof FormState>(key: K, val: FormState[K]) =>
     setForm(prev => ({ ...prev, [key]: val }));
@@ -247,7 +341,8 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
   }
 
   function nextStep() {
-    if (step === STEPS.length - 2 && !form.name) set('name', autoName());
+    // Set name before Profile step so D4H title can use it
+    if (step === 4 && !form.name) set('name', autoName());
     setStep(s => Math.min(s + 1, STEPS.length - 1));
   }
 
@@ -268,6 +363,58 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
     if (!form.subject_category) { setError('Please select a behaviour profile.'); return; }
     setSaving(true);
     setError('');
+
+    // ── Create D4H incident or exercise first ─────────────────────────────────
+    let d4hIncidentId: string | undefined;
+    let d4hExerciseId: string | undefined;
+
+    if (settings.d4hToken) {
+      try {
+        if (form.d4h_mode === 'link' && form.d4h_existing_id.trim()) {
+          // ── Link mode: update the existing D4H record ──────────────────────
+          const existingId = form.d4h_existing_id.trim();
+          await fetch('/api/d4h', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'updateIncident',
+              token: settings.d4hToken,
+              incidentId: existingId,
+              title: form.d4h_title.trim() || form.name || autoName(),
+              description: form.d4h_description.trim(),
+            }),
+          });
+          // Save the linked ID to the operation regardless of update success
+          if (form.d4h_activity_type === 'exercise') d4hExerciseId = existingId;
+          else d4hIncidentId = existingId;
+
+        } else if (form.d4h_mode === 'create' && form.d4h_title.trim()) {
+          // ── Create mode: create a new D4H record ───────────────────────────
+          const d4hPayload = {
+            title:       form.d4h_title.trim(),
+            description: form.d4h_description.trim(),
+            startsAt:    form.d4h_starts_at ? new Date(form.d4h_starts_at).toISOString() : new Date().toISOString(),
+            endsAt:      form.d4h_ends_at   ? new Date(form.d4h_ends_at).toISOString()   : undefined,
+          };
+          const action = form.d4h_activity_type === 'exercise' ? 'createExercise' : 'createIncident';
+          const res = await fetch('/api/d4h', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, token: settings.d4hToken, ...d4hPayload }),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            if (form.d4h_activity_type === 'exercise') d4hExerciseId = String(data.exerciseId);
+            else d4hIncidentId = String(data.incidentId);
+          } else {
+            console.warn('D4H creation failed:', data.error);
+          }
+        }
+      } catch {
+        // Non-fatal: still create the operation
+      }
+    }
+
     try {
       const op = operationsStore.create({
         name: form.name || autoName(),
@@ -301,6 +448,10 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         safety_concerns: form.safety_concerns || undefined,
         subject_category: form.subject_category,
         deploy_decision: null,
+        deployed_equipment_ids: form.deployed_equipment_ids.length ? form.deployed_equipment_ids : undefined,
+        d4h_incident_id: d4hIncidentId,
+        d4h_exercise_id: d4hExerciseId,
+        d4h_activity_type: form.d4h_activity_type,
       });
       onCreated(op);
     } catch (e: unknown) {
@@ -626,11 +777,10 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         </div>
       )}
 
-      {/* ── Step 5: PROFILE + REVIEW ── */}
+      {/* ── Step 5: PROFILE ── */}
       {step === 5 && (
         <div className="space-y-4">
           <p className="text-sm text-gray-500">Select the ISRID lost person behaviour profile. This determines probability ring distances published to CalTopo.</p>
-
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {Object.entries(ISRID).map(([id, p]) => (
               <div key={id} onClick={() => set('subject_category', id)}
@@ -641,36 +791,237 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
               </div>
             ))}
           </div>
-
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Operation Name</label>
             <input value={form.name || autoName()} onChange={e => set('name', e.target.value)}
               placeholder="Auto-generated — edit if needed"
               className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
+        </div>
+      )}
 
-          {/* Review */}
-          <div className="bg-gray-50 rounded-xl p-4 text-sm">
-            <div className="font-semibold text-gray-700 mb-3">Review</div>
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1">
-              {[
-                ['Agency', form.tasking_agency],
-                ['OIC', form.oic_name],
-                ['Tags', form.tags.join(', ')],
-                ['Subject', [form.lost_person_name, form.lost_person_age ? `${form.lost_person_age}y` : '', form.subject_sex].filter(Boolean).join(', ')],
-                ['PLS', form.pls_location?.slice(0, 40)],
-                ['LKP', form.last_seen_location?.slice(0, 40)],
-                ['IPP', form.ipp_type?.toUpperCase()],
-                ['Terrain', form.terrain_type],
-                ['Safety', form.safety_concerns?.slice(0, 60)],
-                ['Profile', ISRID[form.subject_category]?.label],
-              ].map(([k, v]) => v ? (
-                <div key={k} className="contents">
-                  <span className="text-gray-500 font-medium">{k}</span>
-                  <span className="text-gray-800">{v}</span>
-                </div>
-              ) : null)}
+      {/* ── Step 6: D4H INCIDENT / EXERCISE ── */}
+      {step === 6 && (
+        <div className="space-y-4">
+          {!settings.d4hToken ? (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 text-sm text-yellow-800">
+              D4H token not configured — this step will be skipped and the D4H record can be created from the operation page.{' '}
+              <a href="/settings" target="_blank" className="underline">Configure in Settings ↗</a>
             </div>
+          ) : (
+            <p className="text-sm text-gray-500">
+              Pre-populated from your operation. Review and correct — any changes here write back to the operation.
+            </p>
+          )}
+
+          {/* Mode + Activity type */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Mode</label>
+              <div className="flex gap-2">
+                {(['create', 'link'] as const).map(m => (
+                  <button key={m} type="button" onClick={() => set('d4h_mode', m)} className={chip(form.d4h_mode === m)}>
+                    {m === 'create' ? 'Create New' : 'Link Existing'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Activity Type</label>
+              <div className="flex gap-2">
+                {(['incident', 'exercise'] as const).map(t => (
+                  <button key={t} type="button" onClick={() => set('d4h_activity_type', t)} className={chip(form.d4h_activity_type === t)}>
+                    {t === 'incident' ? 'Incident' : 'Exercise'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Link existing — just enter the D4H number */}
+          {form.d4h_mode === 'link' && settings.d4hToken && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Existing D4H {form.d4h_activity_type === 'exercise' ? 'Exercise' : 'Incident'} Number
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={form.d4h_existing_id}
+                onChange={e => set('d4h_existing_id', e.target.value.replace(/\D/g, ''))}
+                placeholder="e.g. 475775"
+                className="w-48 p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                The existing D4H record will be updated with this operation's title and description.
+              </p>
+            </div>
+          )}
+
+          {settings.d4hToken && form.d4h_mode === 'create' && (<>
+            {/* Title */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-gray-700">Title</label>
+                <span className="text-xs text-gray-400">↩ writes to operation name</span>
+              </div>
+              <input value={form.d4h_title} onChange={e => { set('d4h_title', e.target.value); set('name', e.target.value); }}
+                className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+
+            {/* Description */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+              <textarea value={form.d4h_description} onChange={e => set('d4h_description', e.target.value)}
+                rows={5} className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y text-sm" />
+            </div>
+
+            {/* Start / End time */}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">Start Time</label>
+                  <span className="text-xs text-gray-400">↩ writes to PLS time</span>
+                </div>
+                <input type="datetime-local" value={form.d4h_starts_at}
+                  onChange={e => { set('d4h_starts_at', e.target.value); set('pls_time', e.target.value); }}
+                  className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  End Time{form.d4h_activity_type === 'exercise' ? ' *' : ' (optional)'}
+                </label>
+                <input type="datetime-local" value={form.d4h_ends_at} onChange={e => set('d4h_ends_at', e.target.value)}
+                  className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
+              The D4H {form.d4h_activity_type} will be created in D4H when you complete the form. The ID will be saved to this operation automatically.
+            </div>
+          </> )}
+
+          {settings.d4hToken && form.d4h_mode === 'link' && form.d4h_existing_id && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-700">
+              D4H {form.d4h_activity_type} #{form.d4h_existing_id} will be updated with this operation's title and description when you complete the form.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Step 7: EQUIPMENT ── */}
+      {step === 7 && (
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Select the equipment being deployed on this operation.
+            {!settings.d4hToken && ' Configure a D4H token in Settings to load equipment from D4H.'}
+          </p>
+
+          {/* Presets */}
+          {Object.keys(presets).length > 0 && (
+            <div className="bg-gray-50 rounded-xl p-4">
+              <div className="text-sm font-medium text-gray-700 mb-2">Saved Presets</div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(presets).map(([name, ids]) => (
+                  <div key={name} className="flex items-center gap-1">
+                    <button type="button" onClick={() => applyPreset(ids)}
+                      className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
+                        JSON.stringify(form.deployed_equipment_ids.slice().sort()) === JSON.stringify(ids.slice().sort())
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'border-gray-300 text-gray-700 hover:border-blue-400 hover:bg-blue-50'
+                      }`}>
+                      {name}
+                      <span className="text-xs opacity-70 ml-1">({ids.length})</span>
+                    </button>
+                    <button type="button" onClick={() => deletePreset(name)}
+                      title="Delete preset"
+                      className="text-gray-400 hover:text-red-500 text-xs px-1">×</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Equipment list */}
+          {!settings.d4hToken ? (
+            <div className="border border-dashed border-gray-300 rounded-xl p-6 text-center text-gray-500 text-sm">
+              D4H not configured — equipment list unavailable.
+            </div>
+          ) : eqLoading ? (
+            <div className="text-center text-gray-500 py-8">Loading equipment from D4H…</div>
+          ) : eqError ? (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{eqError}</div>
+          ) : equipment.length === 0 ? (
+            <div className="text-center text-gray-500 py-8 text-sm">No equipment found in D4H.</div>
+          ) : (
+            <div className="border border-gray-200 rounded-xl overflow-hidden">
+              {equipment.map((item, i) => (
+                <label key={item.id}
+                  className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-blue-50 transition-colors ${i > 0 ? 'border-t border-gray-100' : ''} ${form.deployed_equipment_ids.includes(item.id) ? 'bg-blue-50' : 'bg-white'}`}>
+                  <input type="checkbox"
+                    checked={form.deployed_equipment_ids.includes(item.id)}
+                    onChange={() => toggleEquipment(item.id)}
+                    className="w-4 h-4 accent-blue-600 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-800 truncate">{item.title}</div>
+                    {(item.ref || item.category?.title) && (
+                      <div className="text-xs text-gray-500">
+                        {[item.ref, item.category?.title].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+
+          {/* Save as preset */}
+          {form.deployed_equipment_ids.length > 0 && (
+            <div className="flex gap-2 items-center">
+              <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)}
+                placeholder="Save selection as preset…"
+                className="flex-1 p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <button type="button" onClick={savePreset} disabled={!newPresetName.trim()}
+                className="px-3 py-2 bg-gray-700 text-white text-sm rounded hover:bg-gray-800 disabled:opacity-50 transition-colors">
+                Save
+              </button>
+            </div>
+          )}
+
+          {form.deployed_equipment_ids.length > 0 && (
+            <p className="text-sm text-green-700 font-medium">
+              {form.deployed_equipment_ids.length} item{form.deployed_equipment_ids.length !== 1 ? 's' : ''} selected for deployment
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── Step 7 (final): EQUIPMENT + REVIEW ── */}
+      {/* Equipment picker already rendered above as step === 7 */}
+      {/* Review panel appended at bottom of equipment step */}
+      {step === 7 && (
+        <div className="bg-gray-50 rounded-xl p-4 text-sm mt-4">
+          <div className="font-semibold text-gray-700 mb-3">Review</div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+            {[
+              ['Agency',    form.tasking_agency],
+              ['OIC',       form.oic_name],
+              ['Tags',      form.tags.join(', ')],
+              ['Subject',   [form.lost_person_name, form.lost_person_age ? `${form.lost_person_age}y` : '', form.subject_sex].filter(Boolean).join(', ')],
+              ['PLS',       form.pls_location?.slice(0, 40)],
+              ['LKP',       form.last_seen_location?.slice(0, 40)],
+              ['IPP',       form.ipp_type?.toUpperCase()],
+              ['Terrain',   form.terrain_type],
+              ['Safety',    form.safety_concerns?.slice(0, 60)],
+              ['Profile',   ISRID[form.subject_category]?.label],
+              ['D4H',       form.d4h_title ? `${form.d4h_activity_type === 'exercise' ? 'Exercise' : 'Incident'}: ${form.d4h_title.slice(0, 40)}` : undefined],
+              ['Equipment', form.deployed_equipment_ids.length ? `${form.deployed_equipment_ids.length} item${form.deployed_equipment_ids.length !== 1 ? 's' : ''} selected` : undefined],
+            ].map(([k, v]) => v ? (
+              <div key={String(k)} className="contents">
+                <span className="text-gray-500 font-medium">{k}</span>
+                <span className="text-gray-800">{v}</span>
+              </div>
+            ) : null)}
           </div>
         </div>
       )}

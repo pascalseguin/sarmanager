@@ -37,6 +37,7 @@ export default function RootLayout({
             <nav className="bg-gray-800 text-white px-6 py-3 flex items-center gap-6">
               <Link href="/" className="font-semibold hover:text-gray-300">SAR Manager</Link>
               <Link href="/operations" className="text-sm text-gray-300 hover:text-white">Operations</Link>
+              <Link href="/equipment" className="text-sm text-gray-300 hover:text-white">Equipment</Link>
               <Link href="/settings" className="text-sm text-gray-300 hover:text-white">Settings</Link>
               <Link href="/logs" className="text-sm text-gray-400 hover:text-white ml-auto">Logs</Link>
             </nav>

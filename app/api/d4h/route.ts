@@ -67,21 +67,32 @@ export async function POST(req: NextRequest) {
 
     // ── Create incident ───────────────────────────────────────────────────────
     if (action === 'createIncident') {
-      const { title, description, latitude, longitude } = body;
+      const { title, description, startsAt, endsAt } = body;
       const teamId = await getTeamId(token);
       const payload: Record<string, unknown> = {
-        referenceDescription: title,
+        title,
         description,
-        fullTeam: true,
-        startsAt: new Date().toISOString(),
+        startsAt: startsAt ?? new Date().toISOString(),
       };
-      if (latitude != null && longitude != null) {
-        payload.location = { latitude, longitude };
-      }
-
+      if (endsAt) payload.endsAt = endsAt;
       const data = await d4hFetch(token, `/v3/team/${teamId}/incidents`, 'POST', payload);
       const incidentId = data?.data?.id ?? data?.id;
       return NextResponse.json({ incidentId, incident: data?.data ?? data });
+    }
+
+    // ── Create exercise ───────────────────────────────────────────────────────
+    if (action === 'createExercise') {
+      const { title, description, startsAt, endsAt } = body;
+      const teamId = await getTeamId(token);
+      const payload: Record<string, unknown> = {
+        title,
+        description,
+        startsAt: startsAt ?? new Date().toISOString(),
+      };
+      if (endsAt) payload.endsAt = endsAt;
+      const data = await d4hFetch(token, `/v3/team/${teamId}/exercises`, 'POST', payload);
+      const exerciseId = data?.data?.id ?? data?.id;
+      return NextResponse.json({ exerciseId, exercise: data?.data ?? data });
     }
 
     // ── Update incident ───────────────────────────────────────────────────────
@@ -89,7 +100,7 @@ export async function POST(req: NextRequest) {
       const { incidentId, title, description } = body;
       const teamId = await getTeamId(token);
       const payload: Record<string, unknown> = {};
-      if (title !== undefined) payload.referenceDescription = title;
+      if (title !== undefined)       payload.title = title;
       if (description !== undefined) payload.description = description;
       const data = await d4hFetch(token, `/v3/team/${teamId}/incidents/${incidentId}`, 'PATCH', payload);
       return NextResponse.json({ incident: data?.data ?? data });
@@ -107,13 +118,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ noteId: data?.data?.id ?? data?.id });
     }
 
-    // ── Send callout (publish incident → triggers D4H Twilio SMS) ────────────
+    // ── Send callout (D4H duty callout → triggers Twilio SMS to team) ────────
     if (action === 'sendCallout') {
-      const { incidentId } = body;
+      const { incidentId, message } = body;
       const teamId = await getTeamId(token);
-      if (!incidentId) throw new Error('incidentId required to publish callout');
-      const data = await d4hFetch(token, `/v3/team/${teamId}/incidents/${incidentId}/publish`, 'POST', { published: true });
-      return NextResponse.json({ calloutId: String(incidentId), data: data?.data ?? data });
+      const payload: Record<string, unknown> = {};
+      if (message) payload.message = String(message).slice(0, 150);
+      if (incidentId) payload.activityId = Number(incidentId);
+      const data = await d4hFetch(token, `/v3/team/${teamId}/duty/callouts`, 'POST', payload);
+      return NextResponse.json({ calloutId: data?.data?.id ?? data?.id ?? String(incidentId) });
     }
 
     // ── Get members ───────────────────────────────────────────────────────────
@@ -139,6 +152,63 @@ export async function POST(req: NextRequest) {
       const text = incidentId ? `[Incident #${incidentId}] ${label}\n${message}` : `${label}\n${message}`;
       const data = await d4hFetch(token, `/v3/team/${teamId}/whiteboard`, 'POST', { text, important: false });
       return NextResponse.json({ updateId: data?.data?.id ?? data?.id });
+    }
+
+    // ── Get equipment list ────────────────────────────────────────────────────
+    if (action === 'getEquipment') {
+      const teamId = await getTeamId(token);
+      const data = await d4hFetch(token, `/v3/team/${teamId}/equipment?size=200`);
+      const items = data?.data ?? data?.results ?? [];
+      return NextResponse.json({ equipment: items });
+    }
+
+    // ── Get single equipment item (to read current notes) ─────────────────────
+    if (action === 'getEquipmentItem') {
+      const { equipmentId } = body;
+      const teamId = await getTeamId(token);
+      const data = await d4hFetch(token, `/v3/team/${teamId}/equipment/${equipmentId}`);
+      return NextResponse.json({ item: data?.data ?? data });
+    }
+
+    // ── Log equipment usage / inspection record ───────────────────────────────
+    // POST /v3/equipment/usages — creates a permanent activity trail on the item
+    if (action === 'logEquipmentUsage') {
+      const { equipmentId, notes, activityId, date } = body;
+      const payload: Record<string, unknown> = {
+        equipment_item_id: Number(equipmentId),
+        notes: notes ?? '',
+        quantity: 1,
+        date: date ?? new Date().toISOString(),
+      };
+      if (activityId) payload.activity_id = Number(activityId);
+      const data = await d4hFetch(token, '/v3/equipment/usages', 'POST', payload);
+      return NextResponse.json({ usageId: data?.data?.id ?? data?.id, usage: data?.data ?? data });
+    }
+
+    // ── Update equipment item status after inspection ──────────────────────────
+    // PATCH /v3/equipment/items/{id} — set Operational/Unserviceable + condition
+    if (action === 'updateEquipmentStatus') {
+      const { equipmentId, status, condition, customFields } = body;
+      const payload: Record<string, unknown> = {};
+      if (status)       payload.status = status;
+      if (condition)    payload.condition = condition;
+      if (customFields) payload.custom_fields = customFields;
+      const data = await d4hFetch(token, `/v3/equipment/items/${equipmentId}`, 'PATCH', payload);
+      return NextResponse.json({ item: data?.data ?? data });
+    }
+
+    // ── Create repair ticket (on inspection failure only) ─────────────────────
+    // POST /v3/repairs
+    if (action === 'createRepairTicket') {
+      const { equipmentId, title, description } = body;
+      const data = await d4hFetch(token, '/v3/repairs', 'POST', {
+        equipment_item_id: Number(equipmentId),
+        title: title ?? 'Failed Inspection',
+        description: description ?? 'Item flagged as unserviceable due to inspection failure.',
+        status: 'Awaiting Repair',
+        date_opened: new Date().toISOString(),
+      });
+      return NextResponse.json({ repairId: data?.data?.id ?? data?.id, repair: data?.data ?? data });
     }
 
     logError('d4h', `Unknown action: ${action}`);

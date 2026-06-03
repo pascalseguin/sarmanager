@@ -188,7 +188,12 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
   const { settings } = useSettings();
   const d4hToken = settings.d4hToken;
 
-  const [auto, setAuto] = useState<AutoState>(AUTO0);
+  // If the D4H incident/exercise was already created during intake, skip that step
+  const alreadyCreated = Boolean(op.d4h_incident_id || op.d4h_exercise_id);
+  const [auto, setAuto] = useState<AutoState>({
+    ...AUTO0,
+    d4hIncident: alreadyCreated ? 'done' : 'idle',
+  });
   const [firing, setFiring] = useState(false);
   const [sarLaunched, setSarLaunched] = useState(false);
   const [activeTab, setActiveTab] = useState<'rollout' | 'weather' | 'brief' | 'smeac' | 'sarab' | 'news' | 'd4hupdate' | 'secondcallout'>('rollout');
@@ -270,9 +275,13 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         longitude: ippLon,
       });
 
-      // Rename with actual D4H ID
+      // Rename with actual D4H ID (non-fatal — incident is already created)
       const finalTitle = `${dateStr} #${incidentId}`;
-      await callD4H('updateIncident', { incidentId, title: finalTitle });
+      try {
+        await callD4H('updateIncident', { incidentId, title: finalTitle });
+      } catch {
+        // D4H v3 incident update may not be available; title stays as PENDING — not critical
+      }
 
       // Save to operation
       const updated = operationsStore.update(op.id, {
@@ -295,8 +304,9 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       if (!ippLat || !ippLon) throw new Error('No IPP coordinates — set UTM in the operation');
 
       const profile = ISRID[op.subject_category ?? ''] ?? ISRID.hiker;
-      const mapTitle = op.d4h_incident_id
-        ? `${new Date().toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()} #${op.d4h_incident_id}`
+      const d4hId = op.d4h_incident_id ?? op.d4h_exercise_id;
+      const mapTitle = d4hId
+        ? `${new Date().toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase()} #${d4hId}`
         : op.name;
 
       // Create the map
@@ -473,7 +483,8 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       <div className="bg-white rounded-xl shadow p-4 mb-4">
         <div className="flex flex-wrap gap-2 mb-3">
           {(([
-            { key: 'd4hIncident', label: 'D4H Incident',      onRun: runD4HIncident, extra: auto.d4hIncidentId ? `#${auto.d4hIncidentId}` : undefined },
+            { key: 'd4hIncident', label: op.d4h_activity_type === 'exercise' ? 'D4H Exercise' : 'D4H Incident', onRun: runD4HIncident,
+              extra: (op.d4h_incident_id ?? op.d4h_exercise_id ?? auto.d4hIncidentId) ? `#${op.d4h_incident_id ?? op.d4h_exercise_id ?? auto.d4hIncidentId}` : undefined },
             { key: 'caltopo',    label: 'CalTopo Map',        onRun: runCaltopo,     link: caltopoUrl || undefined },
             { key: 'whiteboard', label: 'D4H Whiteboard',     onRun: runWhiteboard },
             { key: 'callout',    label: 'Callout SMS',        onRun: runCallout,     extra: auto.calloutId ? `ID ${auto.calloutId}` : undefined },
