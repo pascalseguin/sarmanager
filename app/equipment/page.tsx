@@ -47,13 +47,19 @@ interface InspResult {
   completedAt: string;
   fieldResults: FieldResult[];
   overallPassed: boolean;
+  // Operation linking
+  operationId?: string;
+  operationName?: string;
+  d4hSynced?: boolean;
+  d4hActivityId?: number;
+  d4hSyncedAt?: string;
 }
 
 // ── Local storage helpers ─────────────────────────────────────────────────────
 
 const TMPL_KEY    = 'sarmanager_insp_templates';
 const ASSIGN_KEY  = 'sarmanager_insp_assignments'; // equipmentId(string) → templateId[]
-const RESULTS_KEY = 'sarmanager_insp_results';
+export const RESULTS_KEY = 'sarmanager_insp_results';
 
 const loadTemplates  = (): InspTemplate[] => { try { return JSON.parse(localStorage.getItem(TMPL_KEY)    ?? '[]'); } catch { return []; } };
 const loadAssignments = (): Record<string, string[]> => { try { return JSON.parse(localStorage.getItem(ASSIGN_KEY) ?? '{}'); } catch { return {}; } };
@@ -61,6 +67,14 @@ const loadResults    = (): InspResult[]   => { try { return JSON.parse(localStor
 const saveTemplates   = (t: InspTemplate[])            => localStorage.setItem(TMPL_KEY,    JSON.stringify(t));
 const saveAssignments = (a: Record<string, string[]>)  => localStorage.setItem(ASSIGN_KEY,  JSON.stringify(a));
 const saveResults     = (r: InspResult[])              => localStorage.setItem(RESULTS_KEY, JSON.stringify(r));
+
+function patchResult(id: string, patch: Partial<InspResult>) {
+  try {
+    const all = loadResults();
+    const idx = all.findIndex(r => r.id === id);
+    if (idx !== -1) { all[idx] = { ...all[idx], ...patch }; saveResults(all); }
+  } catch { /* empty */ }
+}
 
 // ── Quick check constants ─────────────────────────────────────────────────────
 
@@ -217,26 +231,35 @@ function QuickCheckTab({
     setSubmitting(true); setError(''); setSubmitted('');
     try {
       const note = formatQuickCheckNote(selected, inspector, condition, fuel, checks, notes);
-      // Step 1: log usage record on the item
-      await callD4H('logEquipmentUsage', { equipmentId: selected.id, notes: note });
-      // Step 2: update item status/condition if not Good
       const isPoor = condition.startsWith('Poor');
-      const isFair = condition.startsWith('Fair');
-      await callD4H('updateEquipmentStatus', {
-        equipmentId: selected.id,
-        status: isPoor ? 'Unserviceable' : 'Operational',
-        condition: isPoor ? 'Poor' : isFair ? 'Fair' : 'Good',
-        customFields: { cf_inspection_result: isPoor || isFair ? 'Fail' : 'Pass', cf_last_inspected_date: new Date().toISOString().slice(0, 10) },
-      });
-      // Step 3: if Poor, auto-create a repair ticket
-      if (isPoor) {
-        await callD4H('createRepairTicket', {
+
+      // Try D4H — best-effort, never blocks completion
+      let d4hSynced = false;
+      await callD4H('logEquipmentUsage', { equipmentId: selected.id, notes: note })
+        .then(() => { d4hSynced = true; })
+        .catch(() => {});
+
+      if (d4hSynced) {
+        await callD4H('updateEquipmentStatus', {
           equipmentId: selected.id,
-          title: `Failed Quick Check — ${selected.title}`,
-          description: `Item flagged as unserviceable by ${inspector} during quick check.\n\n${note}`,
-        });
+          status: isPoor ? 'Unserviceable' : 'Operational',
+          notes: note,
+        }).catch(() => {});
+
+        if (isPoor) {
+          await callD4H('createRepairTicket', {
+            equipmentId: selected.id,
+            title: `Failed Quick Check — ${selected.title}`,
+            description: `Item flagged as unserviceable by ${inspector} during quick check.\n\n${note}`,
+          }).catch(() => {});
+        }
       }
-      setSubmitted(new Date().toLocaleTimeString('en-CA'));
+
+      setSubmitted(
+        d4hSynced
+          ? new Date().toLocaleTimeString('en-CA')
+          : `${new Date().toLocaleTimeString('en-CA')} — saved locally (D4H sync needs a linked operation)`
+      );
       setNotes('');
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to submit');
@@ -460,10 +483,12 @@ function CompleteInspection({
         overallPassed,
       };
 
-      // Save locally first
+      // Save locally — this is the authoritative record
       onResult(result);
+      setSaved(new Date().toLocaleTimeString('en-CA'));
+      setFieldValues({});
 
-      // Build D4H notes summary
+      // Push to D4H best-effort — write back sync status to localStorage
       const noteLines = [
         `Inspection: ${selectedTpl.name}`,
         `Inspector: ${inspector.trim()}`,
@@ -477,37 +502,29 @@ function CompleteInspection({
       ];
       const notes = noteLines.join('\n');
 
-      // Step 1: log usage record
-      await callD4H('logEquipmentUsage', { equipmentId: selectedEq.id, notes });
+      let d4hSynced = false;
+      await callD4H('logEquipmentUsage', { equipmentId: selectedEq.id, notes })
+        .then(() => { d4hSynced = true; })
+        .catch(() => {});
 
-      // Step 2: update item status
-      await callD4H('updateEquipmentStatus', {
-        equipmentId: selectedEq.id,
-        status: overallPassed ? 'Operational' : 'Unserviceable',
-        condition: overallPassed ? 'Good' : 'Poor',
-        customFields: {
-          cf_inspection_result: overallPassed ? 'Pass' : 'Fail',
-          cf_last_inspected_date: new Date().toISOString().slice(0, 10),
-        },
-      });
-
-      // Step 3: create repair ticket if failed
-      if (!overallPassed) {
-        const failedChecks = fieldResults
-          .filter(f => f.value === false)
-          .map(f => f.label)
-          .join(', ');
-        await callD4H('createRepairTicket', {
+      if (d4hSynced) {
+        patchResult(result.id, { d4hSynced: true, d4hSyncedAt: new Date().toISOString() });
+        await callD4H('updateEquipmentStatus', {
           equipmentId: selectedEq.id,
-          title: `Failed Inspection — ${selectedEq.title}`,
-          description: `Failed "${selectedTpl.name}" inspection by ${inspector.trim()}.\nFailed checks: ${failedChecks}\n\n${notes}`,
-        });
+          status: overallPassed ? 'Operational' : 'Unserviceable',
+          notes,
+        }).catch(() => {});
+        if (!overallPassed) {
+          const failedChecks = fieldResults.filter(f => f.value === false).map(f => f.label).join(', ');
+          await callD4H('createRepairTicket', {
+            equipmentId: selectedEq.id,
+            title: `Failed Inspection — ${selectedEq.title}`,
+            description: `Failed "${selectedTpl.name}" inspection by ${inspector.trim()}.\nFailed checks: ${failedChecks}\n\n${notes}`,
+          }).catch(() => {});
+        }
       }
-
-      setSaved(new Date().toLocaleTimeString('en-CA'));
-      setFieldValues({});
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to submit to D4H');
+      setError(e instanceof Error ? e.message : 'Failed to save inspection');
     } finally {
       setSubmitting(false);
     }
@@ -935,13 +952,21 @@ function InspectionHistory({
         {filtered.map(r => (
           <div key={r.id} className={`bg-white rounded-xl shadow p-4 border-l-4 ${r.overallPassed ? 'border-green-500' : 'border-red-500'}`}>
             <div className="flex items-start justify-between gap-3 mb-2">
-              <div>
+              <div className="flex-1 min-w-0">
                 <div className="font-semibold text-gray-800">{r.equipmentName}</div>
                 <div className="text-xs text-gray-500">{r.templateName} · {r.completedBy} · {new Date(r.completedAt).toLocaleString('en-CA')}</div>
+                {r.operationName && (
+                  <div className="text-xs text-blue-600 mt-0.5">Linked: {r.operationName}</div>
+                )}
               </div>
-              <span className={`text-xs font-bold px-2 py-1 rounded-full shrink-0 ${r.overallPassed ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                {r.overallPassed ? 'PASS' : 'FAIL'}
-              </span>
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <span className={`text-xs font-bold px-2 py-1 rounded-full ${r.overallPassed ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                  {r.overallPassed ? 'PASS' : 'FAIL'}
+                </span>
+                <span className={`text-xs px-2 py-0.5 rounded-full ${r.d4hSynced ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {r.d4hSynced ? 'D4H ✓' : 'pending'}
+                </span>
+              </div>
             </div>
             <div className="space-y-1">
               {r.fieldResults.map(f => (

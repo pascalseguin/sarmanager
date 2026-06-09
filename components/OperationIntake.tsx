@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { operationsStore, Operation } from '@/lib/operations-store';
+import { Operation } from '@/lib/operations-store';
 import { parseUTMString, formatUTM } from '@/lib/utm';
 import { ISRID } from '@/lib/isrid';
 import { useSettings } from '@/lib/settings-context';
@@ -416,44 +416,47 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
     }
 
     try {
-      const op = operationsStore.create({
-        name: form.name || autoName(),
-        operation_type: form.operation_type,
-        priority: Number(form.priority) as 1 | 2 | 3,
-        tasking_agency: form.tasking_agency || undefined,
-        oic_name: form.oic_name || undefined,
-        oic_phone: form.oic_phone || undefined,
-        tags: form.tags.length ? form.tags : undefined,
-        caltopo_map_url: form.caltopo_map_url || undefined,
-        caltopo_map_id: form.caltopo_map_id || undefined,
-        lost_person_name: form.lost_person_name || undefined,
-        lost_person_age: form.lost_person_age ? Number(form.lost_person_age) : undefined,
-        subject_sex: form.subject_sex || undefined,
-        subject_clothing: form.subject_clothing || undefined,
-        subject_gear: form.subject_gear || undefined,
-        lost_person_description: form.lost_person_description || undefined,
-        pls_location: form.pls_location || undefined,
-        pls_lat: form.pls_lat ?? undefined,
-        pls_lon: form.pls_lon ?? undefined,
-        pls_time: form.pls_time || undefined,
-        reported_time: form.reported_time || undefined,
-        last_seen_location: form.last_seen_location || undefined,
-        lkp_utm: form.lkp_utm || undefined,
-        latitude: form.latitude ?? undefined,
-        longitude: form.longitude ?? undefined,
-        ipp_type: form.ipp_type,
-        subject_circumstance: form.subject_circumstance || undefined,
-        subject_condition: form.subject_condition || undefined,
-        terrain_type: form.terrain_type,
-        safety_concerns: form.safety_concerns || undefined,
-        subject_category: form.subject_category,
-        deploy_decision: null,
-        deployed_equipment_ids: form.deployed_equipment_ids.length ? form.deployed_equipment_ids : undefined,
-        d4h_incident_id: d4hIncidentId,
-        d4h_exercise_id: d4hExerciseId,
-        d4h_activity_type: form.d4h_activity_type,
+      const token = localStorage.getItem('sarmanager_session_token') ?? '';
+      const res = await fetch('/api/operations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          name: form.name || autoName(),
+          operation_type: form.operation_type,
+          priority: Number(form.priority),
+          tasking_agency: form.tasking_agency || undefined,
+          oic_name: form.oic_name || undefined,
+          oic_phone: form.oic_phone || undefined,
+          caltopo_map_url: form.caltopo_map_url || undefined,
+          caltopo_map_id: form.caltopo_map_id || undefined,
+          lost_person_name: form.lost_person_name || undefined,
+          lost_person_age: form.lost_person_age ? Number(form.lost_person_age) : undefined,
+          subject_sex: form.subject_sex || undefined,
+          subject_clothing: form.subject_clothing || undefined,
+          subject_gear: form.subject_gear || undefined,
+          lost_person_description: form.lost_person_description || undefined,
+          pls_location: form.pls_location || undefined,
+          pls_lat: form.pls_lat ?? undefined,
+          pls_lon: form.pls_lon ?? undefined,
+          pls_time: form.pls_time || undefined,
+          reported_time: form.reported_time || undefined,
+          last_seen_location: form.last_seen_location || undefined,
+          latitude: form.latitude ?? undefined,
+          longitude: form.longitude ?? undefined,
+          ipp_type: form.ipp_type,
+          subject_circumstance: form.subject_circumstance || undefined,
+          subject_condition: form.subject_condition || undefined,
+          terrain_type: form.terrain_type,
+          safety_concerns: form.safety_concerns || undefined,
+          subject_category: form.subject_category,
+          d4h_incident_id: d4hIncidentId,
+          d4h_exercise_id: d4hExerciseId,
+          d4h_activity_type: form.d4h_activity_type,
+        }),
       });
-      onCreated(op);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Failed to create operation');
+      onCreated(data.operation as Operation);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to create operation');
     } finally {

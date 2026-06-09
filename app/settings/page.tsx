@@ -14,6 +14,25 @@ export default function SettingsPage() {
     hereApiKey: settings.hereApiKey,
   });
   const [saved, setSaved] = useState(false);
+  const [d4hTest, setD4hTest] = useState<{ status: 'idle' | 'testing' | 'ok' | 'error'; msg: string }>({ status: 'idle', msg: '' });
+
+  async function testD4H() {
+    const token = form.d4hToken.trim();
+    if (!token) { setD4hTest({ status: 'error', msg: 'Enter a token first' }); return; }
+    setD4hTest({ status: 'testing', msg: '' });
+    try {
+      const res = await fetch('/api/d4h', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'testConnection', token }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setD4hTest({ status: 'ok', msg: `Connected — ${data.teamName} (team ${data.teamId})` });
+    } catch (e: unknown) {
+      setD4hTest({ status: 'error', msg: e instanceof Error ? e.message : 'Connection failed' });
+    }
+  }
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleSave = (e: React.FormEvent) => {
@@ -63,6 +82,18 @@ export default function SettingsPage() {
         <form onSubmit={handleSave} className="bg-white p-6 rounded shadow space-y-2">
           <h2 className="text-lg font-semibold text-gray-700 mb-4">D4H</h2>
           {field('API Token', 'd4hToken', 'password', 'Found in D4H Team Manager → Account → API. Used for incidents, whiteboard, and callouts.')}
+          <div className="flex items-center gap-3 mb-4">
+            <button type="button" onClick={testD4H} disabled={d4hTest.status === 'testing'}
+              className="px-4 py-1.5 text-sm font-medium border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-50 transition-colors">
+              {d4hTest.status === 'testing' ? 'Testing…' : 'Test Connection'}
+            </button>
+            {d4hTest.status === 'ok' && (
+              <span className="text-sm text-green-700 font-medium">✓ {d4hTest.msg}</span>
+            )}
+            {d4hTest.status === 'error' && (
+              <span className="text-sm text-red-600">{d4hTest.msg}</span>
+            )}
+          </div>
 
           <hr className="my-4 border-gray-200" />
           <h2 className="text-lg font-semibold text-gray-700 mb-2">HERE Geocoding</h2>

@@ -160,12 +160,12 @@ try {
     $savedNodeEnv = $env:NODE_ENV
     $env:NODE_ENV = $null   # do NOT skip devDependencies -- needed for build
 
-    & npm install
+    cmd /c "npm install"
     if ($LASTEXITCODE -ne 0) { Fail "npm install failed" }
     OK "Dependencies installed"
 
     Step "Building app (npm run build)"
-    & npm run build
+    cmd /c "npm run build"
     if ($LASTEXITCODE -ne 0) { Fail "Build failed" }
     OK "Build complete"
 } finally {

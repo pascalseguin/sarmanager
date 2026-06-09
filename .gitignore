@@ -31,9 +31,21 @@
 # local data files
 /data/
 
+# SQLite database files — contain searcher PII, password hashes, session tokens
+*.db
+*.db-wal
+*.db-shm
+
 # misc
 .DS_Store
 *.pem
+
+# binary / media blobs — not sensitive but not useful in git
+*.mp4
+*.mov
+*.avi
+_archive/media/
+_archive/logs/
 
 # debug
 npm-debug.log*

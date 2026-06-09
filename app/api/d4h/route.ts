@@ -55,7 +55,8 @@ async function getTeamId(token: string): Promise<number> {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { action, token } = body;
+  const { action } = body;
+  const token: string = (body.token ?? '').trim();
 
   if (!token) {
     logError('d4h', `action=${action} called with no token`);
@@ -64,6 +65,16 @@ export async function POST(req: NextRequest) {
 
   logInfo('d4h', `action=${action}`);
   try {
+
+    // ── Test connection ───────────────────────────────────────────────────────
+    if (action === 'testConnection') {
+      const data = await d4hFetch(token, '/v3/whoami');
+      const members: Array<{ owner?: { id?: number; name?: string; resourceType?: string } }> = data?.members ?? [];
+      const teamMember = members.find(m => m?.owner?.resourceType === 'Team');
+      const teamName = teamMember?.owner?.name ?? 'Unknown team';
+      const teamId = await getTeamId(token);
+      return NextResponse.json({ ok: true, teamName, teamId });
+    }
 
     // ── Create incident ───────────────────────────────────────────────────────
     if (action === 'createIncident') {
@@ -170,10 +181,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ item: data?.data ?? data });
     }
 
-    // ── Log equipment usage / inspection record ───────────────────────────────
-    // POST /v3/equipment/usages — creates a permanent activity trail on the item
+    // ── Log equipment usage ───────────────────────────────────────────────────
     if (action === 'logEquipmentUsage') {
       const { equipmentId, notes, activityId, date } = body;
+      const teamId = await getTeamId(token);
       const payload: Record<string, unknown> = {
         equipment_item_id: Number(equipmentId),
         notes: notes ?? '',
@@ -181,30 +192,34 @@ export async function POST(req: NextRequest) {
         date: date ?? new Date().toISOString(),
       };
       if (activityId) payload.activity_id = Number(activityId);
-      const data = await d4hFetch(token, '/v3/equipment/usages', 'POST', payload);
+      const data = await d4hFetch(token, `/v3/team/${teamId}/equipment-usages`, 'POST', payload);
       return NextResponse.json({ usageId: data?.data?.id ?? data?.id, usage: data?.data ?? data });
     }
 
-    // ── Update equipment item status after inspection ──────────────────────────
-    // PATCH /v3/equipment/items/{id} — set Operational/Unserviceable + condition
+    // ── Log inspection result (sets status Operational/Unserviceable on the item) ──
+    // This replaces the old PATCH /v3/equipment/items/{id} which does not exist.
     if (action === 'updateEquipmentStatus') {
-      const { equipmentId, status, condition, customFields } = body;
-      const payload: Record<string, unknown> = {};
-      if (status)       payload.status = status;
-      if (condition)    payload.condition = condition;
-      if (customFields) payload.custom_fields = customFields;
-      const data = await d4hFetch(token, `/v3/equipment/items/${equipmentId}`, 'PATCH', payload);
-      return NextResponse.json({ item: data?.data ?? data });
+      const { equipmentId, status, notes } = body;
+      const teamId = await getTeamId(token);
+      const d4hStatus = String(status ?? '').toLowerCase().includes('un') ? 'UNSERVICEABLE' : 'OPERATIONAL';
+      const payload: Record<string, unknown> = {
+        equipment_item_id: Number(equipmentId),
+        status: d4hStatus,
+        notes: notes ?? '',
+        inspected_at: new Date().toISOString(),
+      };
+      const data = await d4hFetch(token, `/v3/team/${teamId}/equipment-inspection-results`, 'POST', payload);
+      return NextResponse.json({ resultId: data?.data?.id ?? data?.id, result: data?.data ?? data });
     }
 
-    // ── Create repair ticket (on inspection failure only) ─────────────────────
-    // POST /v3/repairs
+    // ── Create repair ticket ──────────────────────────────────────────────────
     if (action === 'createRepairTicket') {
       const { equipmentId, title, description } = body;
-      const data = await d4hFetch(token, '/v3/repairs', 'POST', {
+      const teamId = await getTeamId(token);
+      const data = await d4hFetch(token, `/v3/team/${teamId}/repairs`, 'POST', {
         equipment_item_id: Number(equipmentId),
         title: title ?? 'Failed Inspection',
-        description: description ?? 'Item flagged as unserviceable due to inspection failure.',
+        description: description ?? 'Item flagged as unserviceable.',
         status: 'Awaiting Repair',
         date_opened: new Date().toISOString(),
       });

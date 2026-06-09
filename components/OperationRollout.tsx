@@ -1,7 +1,19 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Operation, operationsStore } from '@/lib/operations-store';
+import { Operation } from '@/lib/operations-store';
+
+async function apiPatch(opId: string, patch: Partial<Operation>): Promise<Operation | null> {
+  const token = localStorage.getItem('sarmanager_session_token') ?? '';
+  const res = await fetch(`/api/operations/${opId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.operation ?? null;
+}
 import { useSettings } from '@/lib/settings-context';
 import { ISRID, RING_COLORS, circlePolygon } from '@/lib/isrid';
 import { formatUTM } from '@/lib/utm';
@@ -85,7 +97,7 @@ export default function OperationRollout({ op, onUpdated }: Props) {
   const decision = op.deploy_decision ?? null;
 
   async function setDecision(d: 'yes' | 'no') {
-    const updated = operationsStore.update(op.id, {
+    const updated = await apiPatch(op.id, {
       deploy_decision: d,
       deploy_timestamp: new Date().toISOString(),
     });
@@ -196,7 +208,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
   });
   const [firing, setFiring] = useState(false);
   const [sarLaunched, setSarLaunched] = useState(false);
-  const [activeTab, setActiveTab] = useState<'rollout' | 'weather' | 'brief' | 'smeac' | 'sarab' | 'news' | 'd4hupdate' | 'secondcallout'>('rollout');
+  const [activeTab, setActiveTab] = useState<'rollout' | 'weather' | 'brief' | 'smeac' | 'sarab' | 'news' | 'd4hupdate' | 'secondcallout' | 'equipment'>('rollout');
 
   const setStatus = useCallback((key: keyof Omit<AutoState, 'errors'>, status: AutoStatus, extra?: Partial<AutoState>) => {
     setAuto(prev => ({ ...prev, [key]: status, ...extra }));
@@ -284,7 +296,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       }
 
       // Save to operation
-      const updated = operationsStore.update(op.id, {
+      const updated = await apiPatch(op.id, {
         d4h_incident_id: String(incidentId),
         weather_snapshot: weatherSummary,
       });
@@ -363,7 +375,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         await callCaltopo('addFeature', { mapId, feature: ring });
       }
 
-      const updated = operationsStore.update(op.id, { caltopo_map_id: mapId, caltopo_map_url: url });
+      const updated = await apiPatch(op.id, { caltopo_map_id: mapId, caltopo_map_url: url });
       if (updated) onUpdated(updated);
 
       setStatus('caltopo', 'done', { caltopoMapId: mapId, caltopoUrl: url });
@@ -397,12 +409,10 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
     setStatus('callout', 'running');
     try {
       const msg = buildCalloutSMS(op);
-      // Read fresh op from store — runD4HIncident saves d4h_incident_id synchronously
-      // to localStorage before this runs, so the stale `op` prop is bypassed.
-      const freshOp = operationsStore.get(op.id);
-      const incidentId = freshOp?.d4h_incident_id ?? op.d4h_incident_id;
+      // Use the in-component auto state for the incident ID — it's set by runD4HIncident
+      const incidentId = auto.d4hIncidentId ?? op.d4h_incident_id;
       const { calloutId } = await callD4H('sendCallout', { message: msg, incidentId });
-      const updated = operationsStore.update(op.id, { d4h_callout_id: String(calloutId) });
+      const updated = await apiPatch(op.id, { d4h_callout_id: String(calloutId) });
       if (updated) onUpdated(updated);
       setStatus('callout', 'done', { calloutId: String(calloutId) });
     } catch (e: unknown) {
@@ -456,6 +466,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
     { id: 'news', label: 'Local News' },
     { id: 'd4hupdate', label: 'Push Update D4H' },
     { id: 'secondcallout', label: 'Second Callout' },
+    { id: 'equipment', label: 'Equipment' },
   ] as const;
 
   return (
@@ -675,6 +686,11 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       {/* ── SECOND CALLOUT tab ── */}
       {activeTab === 'secondcallout' && (
         <SecondCalloutPanel op={op} callD4H={callD4H} d4hConfigured={Boolean(d4hToken)} defaultSMS={buildCalloutSMS(op)} />
+      )}
+
+      {/* ── EQUIPMENT tab ── */}
+      {activeTab === 'equipment' && (
+        <OperationEquipmentPanel op={op} callD4H={callD4H} d4hConfigured={Boolean(d4hToken)} />
       )}
     </div>
   );
@@ -1298,6 +1314,736 @@ function SecondCalloutPanel({ op, callD4H, d4hConfigured, defaultSMS }: {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Inspection result type (mirrors equipment/page.tsx InspResult) ───────────
+
+interface LocalInspResult {
+  id: string;
+  templateName: string;
+  equipmentId: number;
+  equipmentName: string;
+  completedBy: string;
+  completedAt: string;
+  fieldResults: { fieldId: string; label: string; value: string | boolean }[];
+  overallPassed: boolean;
+  operationId?: string;
+  operationName?: string;
+  d4hSynced?: boolean;
+  d4hActivityId?: number;
+  d4hSyncedAt?: string;
+}
+
+const INSP_RESULTS_KEY = 'sarmanager_insp_results';
+
+function loadLocalInspResults(): LocalInspResult[] {
+  try { return JSON.parse(localStorage.getItem(INSP_RESULTS_KEY) ?? '[]'); }
+  catch { return []; }
+}
+
+function patchLocalInspResult(id: string, patch: Partial<LocalInspResult>) {
+  try {
+    const all = loadLocalInspResults();
+    const idx = all.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      all[idx] = { ...all[idx], ...patch };
+      localStorage.setItem(INSP_RESULTS_KEY, JSON.stringify(all));
+    }
+  } catch { /* empty */ }
+}
+
+// ── Operation Equipment Panel ─────────────────────────────────────────────────
+
+interface D4HEquipmentItem {
+  id: number;
+  title: string;
+  ref?: string;
+  category?: { title?: string };
+}
+
+interface DeployPreset {
+  id: string;
+  name: string;
+  description: string;
+  items: string[];
+  equipmentIds: number[];
+}
+
+interface OpEquipLog {
+  presetIds: string[];
+  itemIds: number[];
+}
+
+const DEPLOY_PRESETS_KEY = 'sarmanager_deploy_presets';
+const OP_EQ_LOG_KEY      = 'sarmanager_op_equipment_logs';
+
+const DEFAULT_PRESETS: DeployPreset[] = [
+  {
+    id: 'default-hasty',
+    name: 'Hasty Team Pack',
+    description: 'Standard 4-person hasty search loadout',
+    items: ['SAR packs × 4', 'Navigation kit', 'Radio × 2', 'First aid kit', 'Rope bag'],
+    equipmentIds: [],
+  },
+  {
+    id: 'default-rope',
+    name: 'Technical Rescue Kit',
+    description: 'Rope rescue and vertical terrain equipment',
+    items: ['Rope bag', 'Harnesses × 4', 'Carabiners', 'Belay devices', 'Helmets × 4'],
+    equipmentIds: [],
+  },
+  {
+    id: 'default-medical',
+    name: 'Medical Response Pack',
+    description: 'Enhanced medical and patient packaging',
+    items: ['AED', 'Oxygen kit', 'Patient packaging', 'Stretcher', 'Trauma kit'],
+    equipmentIds: [],
+  },
+];
+
+function loadDeployPresets(): DeployPreset[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(DEPLOY_PRESETS_KEY) ?? 'null');
+    if (Array.isArray(stored)) return stored;
+  } catch { /* empty */ }
+  localStorage.setItem(DEPLOY_PRESETS_KEY, JSON.stringify(DEFAULT_PRESETS));
+  return DEFAULT_PRESETS;
+}
+
+function saveDeployPresets(p: DeployPreset[]) {
+  localStorage.setItem(DEPLOY_PRESETS_KEY, JSON.stringify(p));
+}
+
+function loadOpEquipLog(opId: string): OpEquipLog {
+  try {
+    const all = JSON.parse(localStorage.getItem(OP_EQ_LOG_KEY) ?? '{}');
+    return all[opId] ?? { presetIds: [], itemIds: [] };
+  } catch { return { presetIds: [], itemIds: [] }; }
+}
+
+function saveOpEquipLog(opId: string, log: OpEquipLog) {
+  try {
+    const all = JSON.parse(localStorage.getItem(OP_EQ_LOG_KEY) ?? '{}');
+    all[opId] = log;
+    localStorage.setItem(OP_EQ_LOG_KEY, JSON.stringify(all));
+  } catch { /* empty */ }
+}
+
+function OperationEquipmentPanel({ op, callD4H, d4hConfigured }: {
+  op: Operation;
+  callD4H: D4HCallFn;
+  d4hConfigured: boolean;
+}) {
+  const [presets, setPresets] = useState<DeployPreset[]>(loadDeployPresets);
+  const [opLog, setOpLog] = useState<OpEquipLog>(() => loadOpEquipLog(op.id));
+  const [logging, setLogging] = useState<Record<string, boolean>>({});
+  const [logErrors, setLogErrors] = useState<Record<string, string>>({});
+
+  const [showEquipment, setShowEquipment] = useState(false);
+  const [equipment, setEquipment] = useState<D4HEquipmentItem[]>([]);
+  const [loadingEq, setLoadingEq] = useState(false);
+  const [eqError, setEqError] = useState('');
+  const [selectedItemIds, setSelectedItemIds] = useState<Set<number>>(new Set());
+  const [loggingItems, setLoggingItems] = useState(false);
+
+  const [showInspections, setShowInspections] = useState(false);
+  const [inspResults, setInspResults] = useState<LocalInspResult[]>([]);
+  const [pushingInspId, setPushingInspId] = useState<string | null>(null);
+  const [inspPushErrors, setInspPushErrors] = useState<Record<string, string>>({});
+
+  const [showManage, setShowManage] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newItems, setNewItems] = useState('');
+  const [newEqIds, setNewEqIds] = useState<Set<number>>(new Set());
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editItems, setEditItems] = useState('');
+  const [editEqIds, setEditEqIds] = useState<Set<number>>(new Set());
+
+  async function logPreset(preset: DeployPreset) {
+    setLogging(prev => ({ ...prev, [preset.id]: true }));
+    setLogErrors(prev => ({ ...prev, [preset.id]: '' }));
+    try {
+      if (d4hConfigured && preset.equipmentIds.length > 0) {
+        const activityId = op.d4h_incident_id ? Number(op.d4h_incident_id) : undefined;
+        await Promise.allSettled(preset.equipmentIds.map(eqId =>
+          callD4H('logEquipmentUsage', {
+            equipmentId: eqId,
+            notes: `Deployed with "${preset.name}" — operation ${op.name}`,
+            activityId,
+            date: new Date().toISOString(),
+          })
+        ));
+      }
+      const next: OpEquipLog = {
+        presetIds: [...new Set([...opLog.presetIds, preset.id])],
+        itemIds:   [...new Set([...opLog.itemIds, ...preset.equipmentIds])],
+      };
+      saveOpEquipLog(op.id, next);
+      setOpLog(next);
+    } catch (e: unknown) {
+      setLogErrors(prev => ({ ...prev, [preset.id]: e instanceof Error ? e.message : 'Failed' }));
+    } finally {
+      setLogging(prev => ({ ...prev, [preset.id]: false }));
+    }
+  }
+
+  function unlogPreset(preset: DeployPreset) {
+    const next: OpEquipLog = {
+      presetIds: opLog.presetIds.filter(id => id !== preset.id),
+      itemIds:   opLog.itemIds.filter(id => !preset.equipmentIds.includes(id)),
+    };
+    saveOpEquipLog(op.id, next);
+    setOpLog(next);
+  }
+
+  function refreshInspResults() {
+    setInspResults(loadLocalInspResults());
+  }
+
+  async function pushInspection(insp: LocalInspResult) {
+    if (!d4hConfigured) return;
+    const activityId = op.d4h_incident_id ? Number(op.d4h_incident_id) : undefined;
+    if (!activityId) return;
+    setPushingInspId(insp.id);
+    setInspPushErrors(prev => ({ ...prev, [insp.id]: '' }));
+    try {
+      const notes = [
+        `Inspection: ${insp.templateName}`,
+        `Inspector: ${insp.completedBy}`,
+        `Result: ${insp.overallPassed ? 'PASS' : 'FAIL'}`,
+        '',
+        ...insp.fieldResults.map(f =>
+          typeof f.value === 'boolean'
+            ? `${f.value ? '✓' : '✗'} ${f.label}`
+            : `${f.label}: ${f.value}`
+        ),
+      ].join('\n');
+
+      await callD4H('logEquipmentUsage', { equipmentId: insp.equipmentId, notes, activityId });
+      await callD4H('updateEquipmentStatus', {
+        equipmentId: insp.equipmentId,
+        status: insp.overallPassed ? 'Operational' : 'Unserviceable',
+        notes,
+      }).catch(() => {});
+
+      const now = new Date().toISOString();
+      patchLocalInspResult(insp.id, {
+        operationId: op.id,
+        operationName: op.name,
+        d4hSynced: true,
+        d4hActivityId: activityId,
+        d4hSyncedAt: now,
+      });
+      setInspResults(loadLocalInspResults());
+    } catch (e: unknown) {
+      setInspPushErrors(prev => ({ ...prev, [insp.id]: e instanceof Error ? e.message : 'Failed' }));
+    } finally {
+      setPushingInspId(null);
+    }
+  }
+
+  async function loadEquipment() {
+    if (!d4hConfigured) return;
+    setLoadingEq(true); setEqError('');
+    try {
+      const data = await callD4H('getEquipment');
+      setEquipment((data.equipment as D4HEquipmentItem[]) ?? []);
+    } catch (e: unknown) {
+      setEqError(e instanceof Error ? e.message : 'Failed to load');
+    } finally {
+      setLoadingEq(false);
+    }
+  }
+
+  function toggleEqItem(id: number) {
+    setSelectedItemIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  async function logSelectedItems() {
+    if (selectedItemIds.size === 0) return;
+    setLoggingItems(true);
+    try {
+      const activityId = op.d4h_incident_id ? Number(op.d4h_incident_id) : undefined;
+      await Promise.allSettled([...selectedItemIds].map(eqId =>
+        callD4H('logEquipmentUsage', {
+          equipmentId: eqId,
+          notes: `Deployed for operation ${op.name}`,
+          activityId,
+          date: new Date().toISOString(),
+        })
+      ));
+      const next: OpEquipLog = {
+        presetIds: opLog.presetIds,
+        itemIds:   [...new Set([...opLog.itemIds, ...selectedItemIds])],
+      };
+      saveOpEquipLog(op.id, next);
+      setOpLog(next);
+      setSelectedItemIds(new Set());
+    } finally {
+      setLoggingItems(false);
+    }
+  }
+
+  function saveNewPreset() {
+    if (!newName.trim()) return;
+    const preset: DeployPreset = {
+      id: crypto.randomUUID(),
+      name: newName.trim(),
+      description: newDesc.trim(),
+      items: newItems.split('\n').map(s => s.trim()).filter(Boolean),
+      equipmentIds: [...newEqIds],
+    };
+    const next = [...presets, preset];
+    saveDeployPresets(next);
+    setPresets(next);
+    setNewName(''); setNewDesc(''); setNewItems(''); setNewEqIds(new Set());
+    setShowCreate(false);
+  }
+
+  function startEdit(preset: DeployPreset) {
+    setEditingId(preset.id);
+    setEditName(preset.name);
+    setEditDesc(preset.description);
+    setEditItems(preset.items.join('\n'));
+    setEditEqIds(new Set(preset.equipmentIds));
+    if (equipment.length === 0) loadEquipment();
+  }
+
+  function saveEdit() {
+    if (!editingId || !editName.trim()) return;
+    const next = presets.map(p =>
+      p.id === editingId
+        ? { ...p, name: editName.trim(), description: editDesc.trim(), items: editItems.split('\n').map(s => s.trim()).filter(Boolean), equipmentIds: [...editEqIds] }
+        : p
+    );
+    saveDeployPresets(next);
+    setPresets(next);
+    setEditingId(null);
+  }
+
+  function deletePreset(id: string) {
+    const next = presets.filter(p => p.id !== id);
+    saveDeployPresets(next);
+    setPresets(next);
+  }
+
+  function toggleNewEqId(id: number) {
+    setNewEqIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  function toggleEditEqId(id: number) {
+    setEditEqIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  const loggedCount = opLog.presetIds.length;
+
+  return (
+    <div className="space-y-4">
+      {/* ── Deployment presets ── */}
+      {presets.length === 0 ? (
+        <div className="bg-white rounded-xl shadow p-6 text-center text-gray-500 text-sm">
+          <p className="mb-2">No deployment presets yet.</p>
+          <button onClick={() => { setShowManage(true); setShowCreate(true); }}
+            className="text-blue-600 hover:underline">Create your first preset</button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {loggedCount > 0 && (
+            <div className="text-xs text-gray-500 font-medium px-1">
+              {loggedCount} preset{loggedCount !== 1 ? 's' : ''} logged to this operation
+            </div>
+          )}
+          {presets.map(preset => {
+            const isLogged  = opLog.presetIds.includes(preset.id);
+            const isLogging = logging[preset.id];
+            const err       = logErrors[preset.id];
+            return (
+              <div key={preset.id}
+                className={`bg-white rounded-xl shadow p-4 border-l-4 transition-colors ${isLogged ? 'border-green-500' : 'border-gray-200'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-gray-800">{preset.name}</div>
+                    {preset.description && (
+                      <div className="text-xs text-gray-500 mt-0.5">{preset.description}</div>
+                    )}
+                    {preset.items.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {preset.items.map((item, i) => (
+                          <span key={i} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{item}</span>
+                        ))}
+                      </div>
+                    )}
+                    {err && <div className="text-xs text-red-600 mt-1">{err}</div>}
+                  </div>
+                  <div className="flex flex-col items-end gap-1.5 shrink-0">
+                    {isLogged ? (
+                      <>
+                        <span className="text-xs font-bold text-green-700 bg-green-100 px-2 py-1 rounded-full">✓ Logged</span>
+                        <button onClick={() => unlogPreset(preset)}
+                          className="text-xs text-gray-400 hover:text-gray-600">undo</button>
+                      </>
+                    ) : (
+                      <button onClick={() => logPreset(preset)} disabled={isLogging}
+                        className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                        {isLogging ? 'Logging…' : 'Log to Op'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Inspection results ── */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <button
+          onClick={() => {
+            const next = !showInspections;
+            setShowInspections(next);
+            if (next) refreshInspResults();
+          }}
+          className="w-full flex items-center justify-between p-4 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
+          <span>Inspection Results</span>
+          <span className="text-gray-400 text-xs">{showInspections ? '▲' : '▼'}</span>
+        </button>
+
+        {showInspections && (() => {
+          const linked   = inspResults.filter(r => r.operationId === op.id);
+          const pending  = inspResults.filter(r => !r.operationId && !r.d4hSynced);
+          const hasIncident = Boolean(op.d4h_incident_id);
+
+          return (
+            <div className="border-t border-gray-100 p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <button onClick={refreshInspResults} className="text-xs text-gray-500 hover:underline">↺ Refresh</button>
+              </div>
+
+              {!hasIncident && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  Run the One-Click Rollout first to create the D4H incident — then you can push inspections.
+                </div>
+              )}
+
+              {/* Pending inspections not yet linked to any operation */}
+              {pending.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                    Pending ({pending.length}) — not yet synced to D4H
+                  </div>
+                  <div className="space-y-2">
+                    {pending.map(insp => (
+                      <div key={insp.id}
+                        className="border border-gray-200 rounded-xl p-3 flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-800">{insp.equipmentName}</div>
+                          <div className="text-xs text-gray-500">
+                            {insp.templateName} · {insp.completedBy} · {new Date(insp.completedAt).toLocaleString('en-CA')}
+                          </div>
+                          {inspPushErrors[insp.id] && (
+                            <div className="text-xs text-red-600 mt-1">{inspPushErrors[insp.id]}</div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${insp.overallPassed ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                            {insp.overallPassed ? 'PASS' : 'FAIL'}
+                          </span>
+                          <button
+                            onClick={() => pushInspection(insp)}
+                            disabled={!hasIncident || pushingInspId === insp.id}
+                            className="px-2.5 py-1 bg-blue-600 text-white rounded text-xs font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                            {pushingInspId === insp.id ? '…' : 'Push to Op'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Inspections already linked to this operation */}
+              {linked.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                    Linked to this operation ({linked.length})
+                  </div>
+                  <div className="space-y-2">
+                    {linked.map(insp => (
+                      <div key={insp.id}
+                        className={`border rounded-xl p-3 ${insp.overallPassed ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-gray-800">{insp.equipmentName}</div>
+                            <div className="text-xs text-gray-500">
+                              {insp.templateName} · {insp.completedBy} · {new Date(insp.completedAt).toLocaleString('en-CA')}
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${insp.overallPassed ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'}`}>
+                              {insp.overallPassed ? 'PASS' : 'FAIL'}
+                            </span>
+                            <span className="text-xs text-blue-600 font-medium">D4H ✓</span>
+                          </div>
+                        </div>
+                        <div className="mt-2 space-y-0.5">
+                          {insp.fieldResults.map(f => (
+                            <div key={f.fieldId} className="flex items-center gap-1.5 text-xs text-gray-700">
+                              {typeof f.value === 'boolean' ? (
+                                <span className={f.value ? 'text-green-600' : 'text-red-600'}>{f.value ? '✓' : '✗'}</span>
+                              ) : (
+                                <span className="text-gray-400">—</span>
+                              )}
+                              <span>{f.label}</span>
+                              {typeof f.value !== 'boolean' && f.value && <span className="text-gray-500">: {String(f.value)}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {pending.length === 0 && linked.length === 0 && (
+                <div className="text-center text-gray-500 text-sm py-4">
+                  No inspection results yet. Complete inspections on the Equipment page.
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* ── Browse individual equipment (hidden by default) ── */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <button
+          onClick={() => {
+            const next = !showEquipment;
+            setShowEquipment(next);
+            if (next && equipment.length === 0) loadEquipment();
+          }}
+          className="w-full flex items-center justify-between p-4 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">
+          <span>Browse individual equipment</span>
+          <span className="text-gray-400 text-xs">{showEquipment ? '▲' : '▼'}</span>
+        </button>
+
+        {showEquipment && (
+          <div className="border-t border-gray-100 p-4 space-y-3">
+            {!d4hConfigured && (
+              <p className="text-sm text-gray-500">
+                D4H not configured — <a href="/settings" className="text-blue-600 hover:underline">add token in Settings</a>.
+              </p>
+            )}
+            {d4hConfigured && loadingEq && (
+              <div className="text-center text-gray-500 text-sm py-4">Loading from D4H…</div>
+            )}
+            {eqError && <p className="text-sm text-red-600">{eqError}</p>}
+            {d4hConfigured && !loadingEq && equipment.length > 0 && (
+              <>
+                <div className="border border-gray-200 rounded-xl overflow-hidden max-h-72 overflow-y-auto">
+                  {equipment.map((item, i) => {
+                    const alreadyLogged = opLog.itemIds.includes(item.id);
+                    return (
+                      <label key={item.id}
+                        className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-blue-50 transition-colors ${i > 0 ? 'border-t border-gray-100' : ''} ${alreadyLogged ? 'bg-green-50' : selectedItemIds.has(item.id) ? 'bg-blue-50' : 'bg-white'}`}>
+                        <input type="checkbox"
+                          checked={selectedItemIds.has(item.id)}
+                          disabled={alreadyLogged}
+                          onChange={() => toggleEqItem(item.id)}
+                          className="w-4 h-4 accent-blue-600 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-gray-800 truncate">{item.title}</div>
+                          {(item.ref || item.category?.title) && (
+                            <div className="text-xs text-gray-500">{[item.ref, item.category?.title].filter(Boolean).join(' · ')}</div>
+                          )}
+                        </div>
+                        {alreadyLogged && <span className="text-xs text-green-600 font-medium shrink-0">✓ logged</span>}
+                      </label>
+                    );
+                  })}
+                </div>
+                {selectedItemIds.size > 0 && (
+                  <button onClick={logSelectedItems} disabled={loggingItems}
+                    className="w-full py-2.5 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                    {loggingItems ? 'Logging…' : `Log ${selectedItemIds.size} item${selectedItemIds.size !== 1 ? 's' : ''} to Operation`}
+                  </button>
+                )}
+                <button onClick={loadEquipment} disabled={loadingEq}
+                  className="text-xs text-gray-500 hover:underline">↺ Refresh list</button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Manage presets (hidden by default) ── */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <button
+          onClick={() => {
+            const next = !showManage;
+            setShowManage(next);
+            if (next && equipment.length === 0) loadEquipment();
+          }}
+          className="w-full flex items-center justify-between p-4 text-sm font-medium text-gray-600 hover:bg-gray-50 transition-colors">
+          <span>Manage presets</span>
+          <span className="text-gray-400 text-xs">{showManage ? '▲' : '▼'}</span>
+        </button>
+
+        {showManage && (
+          <div className="border-t border-gray-100 p-4 space-y-2">
+            {presets.map(p =>
+              editingId === p.id ? (
+                <PresetForm key={p.id}
+                  title="Edit Preset"
+                  name={editName} onName={setEditName}
+                  desc={editDesc} onDesc={setEditDesc}
+                  items={editItems} onItems={setEditItems}
+                  eqIds={editEqIds} onToggleEq={toggleEditEqId}
+                  equipment={equipment} loadingEq={loadingEq}
+                  d4hConfigured={d4hConfigured}
+                  onSave={saveEdit}
+                  onCancel={() => setEditingId(null)}
+                  saveDisabled={!editName.trim()}
+                />
+              ) : (
+                <div key={p.id} className="flex items-center justify-between gap-2 py-2 border-b border-gray-100 last:border-0">
+                  <div>
+                    <span className="text-sm font-medium text-gray-800">{p.name}</span>
+                    <span className="text-xs text-gray-400 ml-2">
+                      {p.items.length > 0 && `${p.items.length} item${p.items.length !== 1 ? 's' : ''}`}
+                      {p.equipmentIds.length > 0 && ` · ${p.equipmentIds.length} D4H asset${p.equipmentIds.length !== 1 ? 's' : ''} linked`}
+                    </span>
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => startEdit(p)}
+                      className="text-xs text-blue-600 hover:text-blue-800 font-medium">Edit</button>
+                    <button onClick={() => { if (confirm(`Delete "${p.name}"?`)) deletePreset(p.id); }}
+                      className="text-xs text-red-500 hover:text-red-700 font-medium">Delete</button>
+                  </div>
+                </div>
+              )
+            )}
+
+            {showCreate ? (
+              <PresetForm
+                title="New Preset"
+                name={newName} onName={setNewName}
+                desc={newDesc} onDesc={setNewDesc}
+                items={newItems} onItems={setNewItems}
+                eqIds={newEqIds} onToggleEq={toggleNewEqId}
+                equipment={equipment} loadingEq={loadingEq}
+                d4hConfigured={d4hConfigured}
+                onSave={saveNewPreset}
+                onCancel={() => { setShowCreate(false); setNewName(''); setNewDesc(''); setNewItems(''); setNewEqIds(new Set()); }}
+                saveDisabled={!newName.trim()}
+              />
+            ) : (
+              !editingId && (
+                <button onClick={() => { setShowCreate(true); if (equipment.length === 0) loadEquipment(); }}
+                  className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors mt-2">
+                  + New Preset
+                </button>
+              )
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Preset form (shared by create and edit) ───────────────────────────────────
+
+function PresetForm({
+  title, name, onName, desc, onDesc, items, onItems,
+  eqIds, onToggleEq, equipment, loadingEq, d4hConfigured,
+  onSave, onCancel, saveDisabled,
+}: {
+  title: string;
+  name: string; onName: (v: string) => void;
+  desc: string; onDesc: (v: string) => void;
+  items: string; onItems: (v: string) => void;
+  eqIds: Set<number>; onToggleEq: (id: number) => void;
+  equipment: D4HEquipmentItem[]; loadingEq: boolean;
+  d4hConfigured: boolean;
+  onSave: () => void; onCancel: () => void;
+  saveDisabled: boolean;
+}) {
+  const [showEqPicker, setShowEqPicker] = useState(eqIds.size > 0);
+
+  return (
+    <div className="border-2 border-blue-300 rounded-xl p-4 space-y-3 mt-2">
+      <div className="text-sm font-semibold text-gray-800">{title}</div>
+
+      <input value={name} onChange={e => onName(e.target.value)}
+        placeholder="Preset name (e.g. Hasty Team Pack)"
+        className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+
+      <input value={desc} onChange={e => onDesc(e.target.value)}
+        placeholder="Short description (optional)"
+        className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+
+      <div>
+        <label className="block text-xs font-medium text-gray-600 mb-1">Display items (one per line)</label>
+        <textarea value={items} onChange={e => onItems(e.target.value)}
+          rows={3}
+          placeholder={"Rope bag\nRadio × 2\nFirst aid kit"}
+          className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-mono" />
+      </div>
+
+      {/* D4H asset linker */}
+      <div>
+        <button onClick={() => setShowEqPicker(prev => !prev)}
+          className="flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-800">
+          <span>{showEqPicker ? '▲' : '▼'}</span>
+          Link D4H assets ({eqIds.size} linked)
+        </button>
+
+        {showEqPicker && (
+          <div className="mt-2">
+            {!d4hConfigured && (
+              <p className="text-xs text-gray-500">D4H token required — <a href="/settings" className="text-blue-600 hover:underline">configure in Settings</a>.</p>
+            )}
+            {d4hConfigured && loadingEq && (
+              <div className="text-xs text-gray-400 py-2">Loading D4H equipment…</div>
+            )}
+            {d4hConfigured && !loadingEq && equipment.length === 0 && (
+              <div className="text-xs text-gray-400 py-2">No D4H equipment loaded.</div>
+            )}
+            {d4hConfigured && equipment.length > 0 && (
+              <div className="border border-gray-200 rounded-lg overflow-hidden max-h-48 overflow-y-auto">
+                {equipment.map((item, i) => (
+                  <label key={item.id}
+                    className={`flex items-center gap-2 p-2 cursor-pointer hover:bg-blue-50 transition-colors text-sm ${i > 0 ? 'border-t border-gray-100' : ''} ${eqIds.has(item.id) ? 'bg-blue-50' : 'bg-white'}`}>
+                    <input type="checkbox" checked={eqIds.has(item.id)} onChange={() => onToggleEq(item.id)}
+                      className="w-3.5 h-3.5 accent-blue-600 shrink-0" />
+                    <span className="truncate text-gray-800">{item.title}</span>
+                    {item.ref && <span className="text-gray-400 text-xs shrink-0">{item.ref}</span>}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-2 justify-end pt-1">
+        <button onClick={onCancel}
+          className="px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+        <button onClick={onSave} disabled={saveDisabled}
+          className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">Save</button>
+      </div>
     </div>
   );
 }

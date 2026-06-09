@@ -2,7 +2,20 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { operationsStore, Operation } from '@/lib/operations-store';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/lib/auth-context';
+
+interface Operation {
+  id: string;
+  name: string;
+  status: string;
+  priority: number;
+  started_at: string;
+  tasking_agency?: string;
+  lost_person_name?: string;
+  lost_person_age?: number;
+  deploy_decision?: string;
+}
 
 const PRIORITY_LABEL: Record<number, string> = { 1: 'P1 – Critical', 2: 'P2 – High', 3: 'P3 – Normal' };
 const PRIORITY_COLOR: Record<number, string> = { 1: 'bg-red-100 text-red-700', 2: 'bg-yellow-100 text-yellow-700', 3: 'bg-gray-100 text-gray-600' };
@@ -16,11 +29,26 @@ function elapsed(startedAt: string) {
 }
 
 export default function OperationsPage() {
+  const { user, loading, authFetch } = useAuth();
+  const router = useRouter();
   const [ops, setOps] = useState<Operation[]>([]);
+  const [fetching, setFetching] = useState(false);
 
   useEffect(() => {
-    setOps(operationsStore.list());
-  }, []);
+    if (!loading && !user) router.replace('/login');
+  }, [user, loading]);
+
+  useEffect(() => {
+    if (!user) return;
+    setFetching(true);
+    authFetch('/api/operations')
+      .then(r => r.json())
+      .then(d => setOps(d.operations ?? []))
+      .catch(() => {})
+      .finally(() => setFetching(false));
+  }, [user]);
+
+  if (loading || !user) return null;
 
   const active = ops.filter(o => o.status === 'active');
   const closed = ops.filter(o => o.status === 'closed');
@@ -36,7 +64,7 @@ export default function OperationsPage() {
           </Link>
         </div>
 
-        {ops.length === 0 && (
+        {!fetching && ops.length === 0 && (
           <div className="bg-white rounded-xl shadow p-12 text-center">
             <p className="text-gray-500 mb-4">No operations yet.</p>
             <Link href="/operations/new"
@@ -80,19 +108,12 @@ function OpCard({ op }: { op: Operation }) {
               {op.lost_person_name && <span>{op.lost_person_name}{op.lost_person_age ? `, ${op.lost_person_age}y` : ''} · </span>}
               {op.status === 'active' && <span className="text-blue-600">{elapsed(op.started_at)} elapsed</span>}
             </div>
-            {op.tags && op.tags.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-2">
-                {op.tags.map(t => (
-                  <span key={t} className="text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full">{t}</span>
-                ))}
-              </div>
-            )}
           </div>
           <div className="flex flex-col items-end gap-2 shrink-0">
-            <span className={`text-xs font-semibold px-2 py-1 rounded-full ${PRIORITY_COLOR[op.priority]}`}>
-              {PRIORITY_LABEL[op.priority]}
+            <span className={`text-xs font-semibold px-2 py-1 rounded-full ${PRIORITY_COLOR[op.priority] ?? 'bg-gray-100 text-gray-600'}`}>
+              {PRIORITY_LABEL[op.priority] ?? `P${op.priority}`}
             </span>
-            <span className={`text-xs font-medium px-2 py-1 rounded-full capitalize ${STATUS_COLOR[op.status]}`}>
+            <span className={`text-xs font-medium px-2 py-1 rounded-full capitalize ${STATUS_COLOR[op.status] ?? 'bg-gray-100 text-gray-500'}`}>
               {op.status}
             </span>
             {op.deploy_decision === 'yes' && (
