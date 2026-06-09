@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import { Operation } from '@/lib/operations-store';
 
 async function apiPatch(opId: string, patch: Partial<Operation>): Promise<Operation | null> {
@@ -486,6 +487,10 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
               className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors">
               {firing ? 'Firing…' : doneCount === autoKeys.length ? '↺ Re-fire' : '🚀 One-Click Rollout'}
             </button>
+            <Link href={`/operations/${op.id}/close`}
+              className="px-4 py-2 rounded-lg text-sm font-bold border border-red-300 text-red-600 hover:bg-red-50 transition-colors">
+              Close Op
+            </Link>
           </div>
         </div>
       </div>

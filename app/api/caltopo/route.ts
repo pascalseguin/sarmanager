@@ -8,6 +8,26 @@ function sign(secret: string, method: string, url: string, expires: number, payl
   return crypto.createHmac('sha256', key).update(message).digest('base64');
 }
 
+async function caltopoGet(url: string, credentialId: string, secret: string) {
+  const expires = Date.now() + 120_000;
+  const urlPath = new URL(url).pathname;
+  const message = `GET ${urlPath}\n${expires}\n`;
+  const key = Buffer.from(secret, 'base64');
+  const signature = crypto.createHmac('sha256', key).update(message).digest('base64');
+  const separator = url.includes('?') ? '&' : '?';
+  const signed = `${url}${separator}id=${encodeURIComponent(credentialId)}&expires=${expires}&signature=${encodeURIComponent(signature)}`;
+
+  logInfo('caltopo', `GET ${url}`);
+  const res = await fetch(signed);
+  if (!res.ok) {
+    const text = await res.text();
+    logError('caltopo', `GET ${url} failed`, new Error(`${res.status}: ${text.slice(0, 300)}`));
+    throw new Error(`CalTopo ${res.status}: ${text.slice(0, 200)}`);
+  }
+  logInfo('caltopo', `GET ${url} → ${res.status}`);
+  return res.json();
+}
+
 async function caltopoPost(url: string, credentialId: string, secret: string, data: object) {
   const expires = Date.now() + 120_000;
   const json = JSON.stringify(data);
@@ -69,6 +89,33 @@ export async function POST(req: NextRequest) {
       const url = `https://caltopo.com/api/v1/map/${mapId}/${type}`;
       const data = await caltopoPost(url, credentialId, secret, feature);
       return NextResponse.json(data);
+    }
+
+    // ── Discover existing folders by listing team maps ────────────────────────
+    if (action === 'discoverFolders') {
+      // List all maps the account owns, extract unique folderId values
+      const url = `https://caltopo.com/api/v1/acct/${accountId}/CollaborativeMap`;
+      const data = await caltopoGet(url, credentialId, secret);
+      const maps: any[] = data?.result ?? data?.results ?? [];
+      const seen = new Map<string, string>();
+      for (const m of maps) {
+        const fId = m?.properties?.folderId ?? m?.folderId;
+        const title = m?.properties?.folderId ? `Folder ${fId}` : '';
+        if (fId && !seen.has(fId)) seen.set(fId, title);
+      }
+      return NextResponse.json({ folders: [...seen.entries()].map(([id, title]) => ({ id, title: title || id })) });
+    }
+
+    // ── Create a new CalTopo UserFolder ──────────────────────────────────────
+    if (action === 'createFolder') {
+      const { title = 'SAR Operations' } = body;
+      const url = `https://caltopo.com/api/v1/acct/${accountId}/UserFolder`;
+      const data = await caltopoPost(url, credentialId, secret, {
+        properties: { title: String(title).trim() || 'SAR Operations' },
+      });
+      const folderId = data?.result?.id ?? data?.id;
+      if (!folderId) throw new Error('CalTopo did not return a folder ID');
+      return NextResponse.json({ folderId, title });
     }
 
     logError('caltopo', `Unknown action: ${action}`);

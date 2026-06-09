@@ -98,8 +98,8 @@ export default function OperationsPage() {
 
 function OpCard({ op }: { op: Operation }) {
   return (
-    <Link href={`/operations/${op.id}`}>
-      <div className="bg-white rounded-xl shadow p-4 hover:shadow-md transition-shadow cursor-pointer">
+    <div className="bg-white rounded-xl shadow p-4 hover:shadow-md transition-shadow relative group">
+      <Link href={`/operations/${op.id}`} className="block">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-gray-800 truncate">{op.name}</div>
@@ -121,7 +121,16 @@ function OpCard({ op }: { op: Operation }) {
             )}
           </div>
         </div>
-      </div>
-    </Link>
+      </Link>
+      {op.status === 'active' && (
+        <div className="mt-3 pt-3 border-t border-gray-100 flex justify-end">
+          <Link href={`/operations/${op.id}/close`}
+            className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
+            onClick={e => e.stopPropagation()}>
+            Close Operation →
+          </Link>
+        </div>
+      )}
+    </div>
   );
 }

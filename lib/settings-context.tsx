@@ -10,6 +10,8 @@ export interface CalTopoSettings {
   defaultGeoJSON: GeoJSON.FeatureCollection | null;
   defaultGeoJSONName: string;
   d4hToken: string;
+  d4hTeamId: string;
+  d4hTeamName: string;
   hereApiKey: string;
 }
 
@@ -29,6 +31,8 @@ const defaultSettings: CalTopoSettings = {
   defaultGeoJSON: null,
   defaultGeoJSONName: '',
   d4hToken: '',
+  d4hTeamId: '',
+  d4hTeamName: '',
   hereApiKey: '',
 };
 
