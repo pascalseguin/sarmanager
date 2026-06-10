@@ -12,6 +12,13 @@ export const metadata: Metadata = {
   title: "SAR Manager",
   description: "Unified interface for SAR operations",
   manifest: "/manifest.json",
+  icons: {
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/favicon.ico' },
+    ],
+    apple: '/favicon.svg',
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

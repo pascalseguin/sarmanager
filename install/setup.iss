@@ -25,7 +25,7 @@ MinVersion=10.0
 SetupLogging=yes
 CloseApplications=yes
 UninstallDisplayName={#AppName}
-UninstallDisplayIcon={app}\server\node_modules\.bin\node.exe
+UninstallDisplayIcon={app}\server\server.js
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

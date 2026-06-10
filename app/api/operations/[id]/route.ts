@@ -26,7 +26,7 @@ const ALLOWED = [
   'last_seen_location','last_seen_time','latitude','longitude','lkp_notes',
   'pls_location','pls_lat','pls_lon','pls_time','reported_time','ipp_type','terrain_type',
   'tasking_agency','oic_name','oic_phone','mutual_aid_orgs','safety_concerns',
-  'caltopo_map_id','caltopo_map_url',
+  'caltopo_map_id','caltopo_map_url','caltopo_features',
   'd4h_incident_id','d4h_exercise_id','d4h_activity_type','d4h_callout_id',
   'deploy_decision','deploy_timestamp','weather_snapshot',
 ];

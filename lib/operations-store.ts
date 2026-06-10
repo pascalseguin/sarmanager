@@ -42,6 +42,7 @@ export interface Operation {
   // CalTopo
   caltopo_map_id?: string;
   caltopo_map_url?: string;
+  caltopo_features?: string;  // Local GeoJSON snapshot for Leaflet rendering
   // D4H
   d4h_incident_id?: string;
   d4h_exercise_id?: string;

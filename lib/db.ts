@@ -304,6 +304,44 @@ db.exec(`
   );
 `);
 
+// ── Additional tables (equipment full schema) ─────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS deployment_preset_containers (
+    preset_id TEXT NOT NULL REFERENCES deployment_presets(id) ON DELETE CASCADE,
+    container_name TEXT NOT NULL,
+    PRIMARY KEY (preset_id, container_name)
+  );
+
+  CREATE TABLE IF NOT EXISTS operation_deployments (
+    id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+    preset_id TEXT NOT NULL REFERENCES deployment_presets(id) ON DELETE CASCADE,
+    deployed_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS insp_container_assignments (
+    template_id TEXT NOT NULL REFERENCES insp_templates(id) ON DELETE CASCADE,
+    container_name TEXT NOT NULL,
+    PRIMARY KEY (template_id, container_name)
+  );
+`);
+
+// ── Runtime migrations (safe ALTER TABLE — swallowed if column already exists) ─
+const migrations = [
+  "ALTER TABLE searcher_checkins ADD COLUMN last_heard_at TEXT",
+  "ALTER TABLE tasks ADD COLUMN search_type TEXT",
+  "ALTER TABLE tasks ADD COLUMN team_type TEXT",
+  "ALTER TABLE tasks ADD COLUMN current_assignment TEXT",
+  "ALTER TABLE tasks ADD COLUMN planned_tasks TEXT",
+  "ALTER TABLE equipment ADD COLUMN barcode TEXT",
+  "ALTER TABLE equipment ADD COLUMN model TEXT",
+  "ALTER TABLE insp_results ADD COLUMN container_name TEXT",
+  "ALTER TABLE operations ADD COLUMN caltopo_features TEXT",
+];
+for (const sql of migrations) {
+  try { db.prepare(sql).run(); } catch { /* column already exists */ }
+}
+
 // ── Seed default SM account ───────────────────────────────────────────────────
 
 function ensurePersonnel(userId: string, name: string, role: string) {

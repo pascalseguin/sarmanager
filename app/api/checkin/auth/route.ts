@@ -1,6 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 
+async function checkOnCall(d4hMemberId: number): Promise<string | null> {
+  try {
+    const row = db.prepare("SELECT value FROM config WHERE key = 'd4h_token'").get() as any;
+    const token = row?.value;
+    const teamRow = db.prepare("SELECT value FROM config WHERE key = 'd4h_team_id'").get() as any;
+    const teamId = teamRow?.value;
+    if (!token || !teamId) return null;
+    const res = await fetch(`https://api.d4h.com/v3/team/${teamId}/duty-roster/on-call`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const entries: any[] = data?.data ?? data?.results ?? [];
+    const entry = entries.find((e: any) => (e.member?.id ?? e.member_id) === d4hMemberId);
+    return entry?.end_at ?? entry?.ends_at ?? null;
+  } catch { return null; }
+}
+
 function normalizePhone(raw: string) { return raw.replace(/\D/g, ''); }
 
 function nameVariants(first: string, last: string): string[] {
@@ -54,6 +72,8 @@ export async function POST(req: NextRequest) {
     const quals: string[] = (match.qualifications ?? match.user_quals ?? '')
       .split(/[,;]+/).map((q: string) => q.trim()).filter(Boolean);
 
+    const onCallEndsAt = d4hMemberId ? await checkOnCall(d4hMemberId) : null;
+
     return NextResponse.json({
       personnelId: match.id,
       d4hMemberId,
@@ -61,7 +81,7 @@ export async function POST(req: NextRequest) {
       qualifications: quals,
       contact: match.contact ?? '',
       operationId,
-      onCallEndsAt: null,
+      onCallEndsAt,
     });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : 'Server error' }, { status: 500 });

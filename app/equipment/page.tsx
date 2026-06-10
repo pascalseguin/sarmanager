@@ -123,21 +123,22 @@ export default function EquipmentPage() {
   const d4hToken = settings.d4hToken;
   const configured = Boolean(d4hToken);
 
-  const [tab, setTab] = useState<'quickcheck' | 'inspections'>('quickcheck');
+  const [tab, setTab] = useState<'registry' | 'presets' | 'quickcheck' | 'inspections'>('registry');
   const [equipment, setEquipment] = useState<D4HEquipmentItem[]>([]);
   const [loadingEq, setLoadingEq] = useState(false);
   const [eqError, setEqError] = useState('');
 
+  const d4hTeamId = settings.d4hTeamId;
   const callD4H = useCallback(async (action: string, extra: object = {}) => {
     const res = await fetch('/api/d4h', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, token: d4hToken, ...extra }),
+      body: JSON.stringify({ action, token: d4hToken, ...(d4hTeamId ? { teamId: Number(d4hTeamId) } : {}), ...extra }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error ?? 'D4H error');
     return data;
-  }, [d4hToken]);
+  }, [d4hToken, d4hTeamId]);
 
   async function loadEquipment() {
     if (!configured) return;
@@ -154,35 +155,30 @@ export default function EquipmentPage() {
 
   useEffect(() => { loadEquipment(); }, [configured]);
 
-  if (!configured) {
-    return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-6">
-        <div className="bg-white rounded-xl shadow p-6 max-w-md text-center">
-          <p className="text-gray-600 mb-3">D4H token not configured.</p>
-          <a href="/settings" className="text-sm text-blue-600 hover:underline">Go to Settings →</a>
-        </div>
-      </div>
-    );
-  }
+  const token = typeof window !== 'undefined' ? (localStorage.getItem('sarmanager_session_token') ?? '') : '';
 
   return (
     <div className="min-h-screen bg-gray-100 p-4">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-5xl mx-auto">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-xl font-bold text-gray-900">Equipment</h1>
-          <button onClick={loadEquipment} disabled={loadingEq}
-            className="text-sm text-blue-600 hover:underline disabled:opacity-50">
-            {loadingEq ? 'Loading…' : '↺ Refresh'}
-          </button>
+          {(tab === 'quickcheck' || tab === 'inspections') && (
+            <button onClick={loadEquipment} disabled={loadingEq}
+              className="text-sm text-blue-600 hover:underline disabled:opacity-50">
+              {loadingEq ? 'Loading…' : '↺ Refresh D4H'}
+            </button>
+          )}
         </div>
 
-        <div className="flex gap-1 bg-white rounded-xl shadow p-1 mb-4">
+        <div className="flex gap-1 bg-white rounded-xl shadow p-1 mb-4 overflow-x-auto">
           {([
+            { id: 'registry',    label: '📦 Registry' },
+            { id: 'presets',     label: '🗂 Presets' },
             { id: 'quickcheck',  label: 'Quick Check' },
             { id: 'inspections', label: 'Inspections' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === t.id ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}>
+              className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${tab === t.id ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}>
               {t.label}
             </button>
           ))}
@@ -192,10 +188,25 @@ export default function EquipmentPage() {
           <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 mb-4">{eqError}</div>
         )}
 
-        {tab === 'quickcheck' && (
+        {tab === 'registry' && <RegistryTab token={token} />}
+        {tab === 'presets'  && <PresetsTab token={token} />}
+
+        {tab === 'quickcheck' && !configured && (
+          <div className="bg-white rounded-xl shadow p-6 text-center text-gray-500">
+            <p className="mb-2">D4H token not configured.</p>
+            <a href="/settings" className="text-sm text-blue-600 hover:underline">Go to Settings →</a>
+          </div>
+        )}
+        {tab === 'quickcheck' && configured && (
           <QuickCheckTab equipment={equipment} loading={loadingEq} callD4H={callD4H} />
         )}
-        {tab === 'inspections' && (
+        {tab === 'inspections' && !configured && (
+          <div className="bg-white rounded-xl shadow p-6 text-center text-gray-500">
+            <p className="mb-2">D4H token not configured.</p>
+            <a href="/settings" className="text-sm text-blue-600 hover:underline">Go to Settings →</a>
+          </div>
+        )}
+        {tab === 'inspections' && configured && (
           <InspectionsTab equipment={equipment} loading={loadingEq} callD4H={callD4H} />
         )}
       </div>
@@ -988,6 +999,470 @@ function InspectionHistory({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Equipment Registry Tab ────────────────────────────────────────────────────
+
+interface LocalEquipment {
+  id: string; name: string; brand?: string; model?: string; serial?: string;
+  barcode?: string; ref?: string; type?: string; category?: string;
+  location?: string; container?: string; status: string; deployable: number;
+  notes?: string; tag?: string; d4h_equipment_id?: number;
+}
+
+const EQ_TYPES = ['Vehicle','Rope','Medical','Radio','Navigation','Pack','Personal','Technical','Other'];
+const EQ_STATUS = ['available','deployed','retired'] as const;
+
+function RegistryTab({ token }: { token: string }) {
+  const { settings } = useSettings();
+  const [items, setItems]   = useState<LocalEquipment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [filterContainer, setFilterContainer] = useState('');
+  const [containers, setContainers] = useState<string[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [editId, setEditId]   = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState('');
+  const [showCsvImport, setShowCsvImport] = useState(false);
+  const [csvText, setCsvText] = useState('');
+  const [csvPreview, setCsvPreview] = useState<Record<string,string>[]>([]);
+  const [csvImporting, setCsvImporting] = useState(false);
+  const [csvMsg, setCsvMsg] = useState('');
+
+  const authHdr = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+  async function load() {
+    setLoading(true);
+    const [eqRes, cRes] = await Promise.all([
+      fetch('/api/equipment', { headers: { Authorization: `Bearer ${token}` } }),
+      fetch('/api/equipment/containers', { headers: { Authorization: `Bearer ${token}` } }),
+    ]);
+    if (eqRes.ok) { const d = await eqRes.json(); setItems(d.equipment ?? []); }
+    if (cRes.ok)  { const d = await cRes.json(); setContainers(d.containers ?? []); }
+    setLoading(false);
+  }
+
+  async function importD4H() {
+    if (!settings.d4hToken) { setImportMsg('D4H token not configured in Settings'); return; }
+    setImporting(true); setImportMsg('');
+    try {
+      const res = await fetch('/api/equipment/import-d4h', {
+        method: 'POST', headers: authHdr,
+        body: JSON.stringify({ token: settings.d4hToken, teamId: settings.d4hTeamId }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      setImportMsg(`✓ ${d.created} created, ${d.updated} updated (${d.total} total from D4H)`);
+      load();
+    } catch (e: unknown) { setImportMsg(e instanceof Error ? e.message : 'Import failed'); }
+    finally { setImporting(false); }
+  }
+
+  async function bulkAction(action: string, extra: object = {}) {
+    if (!selected.size) return;
+    await fetch('/api/equipment/bulk', {
+      method: 'POST', headers: authHdr,
+      body: JSON.stringify({ action, ids: [...selected], ...extra }),
+    });
+    setSelected(new Set()); load();
+  }
+
+  async function deleteItem(id: string) {
+    if (!confirm('Delete this equipment item?')) return;
+    await fetch(`/api/equipment/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    setItems(prev => prev.filter(i => i.id !== id));
+  }
+
+  function parseCsv(text: string): Record<string,string>[] {
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim().split('\n');
+    if (lines.length < 2) return [];
+    const headers = lines[0].split(',').map(h => h.replace(/^"|"$/g,'').trim().toLowerCase());
+    return lines.slice(1).map(line => {
+      const cols = line.split(',').map(c => c.replace(/^"|"$/g,'').trim());
+      return Object.fromEntries(headers.map((h, i) => [h, cols[i] ?? '']));
+    }).filter(r => r.name);
+  }
+
+  async function importCsv() {
+    if (!csvPreview.length) return;
+    setCsvImporting(true); setCsvMsg('');
+    try {
+      const res = await fetch('/api/equipment/import-csv', {
+        method: 'POST', headers: authHdr,
+        body: JSON.stringify({ rows: csvPreview }),
+      });
+      const d = await res.json();
+      setCsvMsg(`✓ ${d.created} created, ${d.skipped} skipped${d.errors?.length ? `, ${d.errors.length} errors` : ''}`);
+      setShowCsvImport(false); setCsvText(''); setCsvPreview([]);
+      load();
+    } catch (e: unknown) { setCsvMsg(e instanceof Error ? e.message : 'Import failed'); }
+    finally { setCsvImporting(false); }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  const filtered = items.filter(i => {
+    if (filterStatus && i.status !== filterStatus) return false;
+    if (filterContainer && i.container !== filterContainer) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      return i.name.toLowerCase().includes(s) || (i.tag ?? '').toLowerCase().includes(s) ||
+             (i.serial ?? '').toLowerCase().includes(s) || (i.container ?? '').toLowerCase().includes(s);
+    }
+    return true;
+  });
+
+  const toggleSelect = (id: string) => setSelected(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+  const toggleAll = () => setSelected(selected.size === filtered.length ? new Set() : new Set(filtered.map(i => i.id)));
+
+  if (loading) return <div className="text-center text-gray-500 py-12">Loading registry…</div>;
+
+  return (
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="bg-white rounded-xl shadow p-4 flex flex-wrap gap-2 items-center">
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, tag, serial…"
+          className="flex-1 min-w-40 border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+          className="border border-gray-300 rounded p-2 text-sm">
+          <option value="">All statuses</option>
+          {EQ_STATUS.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={filterContainer} onChange={e => setFilterContainer(e.target.value)}
+          className="border border-gray-300 rounded p-2 text-sm">
+          <option value="">All containers</option>
+          {containers.map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <button onClick={() => setShowAdd(true)}
+          className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">+ Add</button>
+        <button onClick={importD4H} disabled={importing}
+          className="px-3 py-2 border border-gray-300 rounded text-sm hover:bg-gray-50 disabled:opacity-50">
+          {importing ? 'Importing…' : '⟳ Sync D4H'}
+        </button>
+        <button onClick={() => setShowCsvImport(true)}
+          className="px-3 py-2 border border-gray-300 rounded text-sm hover:bg-gray-50">↑ CSV</button>
+        {importMsg && <span className="text-xs text-green-600">{importMsg}</span>}
+      </div>
+
+      {/* Bulk actions */}
+      {selected.size > 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2 flex items-center gap-3 flex-wrap text-sm">
+          <span className="font-medium text-blue-700">{selected.size} selected</span>
+          <button onClick={() => bulkAction('status', { status: 'deployed' })} className="text-blue-600 hover:underline">Mark Deployed</button>
+          <button onClick={() => bulkAction('status', { status: 'available' })} className="text-blue-600 hover:underline">Mark Available</button>
+          <button onClick={() => bulkAction('status', { status: 'retired' })} className="text-blue-600 hover:underline">Mark Retired</button>
+          <button onClick={() => bulkAction('deployable', { deployable: true })} className="text-blue-600 hover:underline">Set Deployable</button>
+          <button onClick={() => { const c = prompt('Container name:'); if (c !== null) bulkAction('container', { container: c || null }); }} className="text-blue-600 hover:underline">Assign Container</button>
+          <button onClick={() => { if (confirm(`Delete ${selected.size} items?`)) bulkAction('delete'); }} className="text-red-500 hover:underline">Delete</button>
+          <button onClick={() => setSelected(new Set())} className="ml-auto text-gray-500 hover:underline">Clear</button>
+        </div>
+      )}
+
+      {/* CSV import panel */}
+      {showCsvImport && (
+        <div className="bg-white rounded-xl shadow p-4 border-2 border-blue-300 space-y-3">
+          <div className="flex justify-between items-center">
+            <span className="font-semibold text-sm">CSV Import</span>
+            <button onClick={() => { setShowCsvImport(false); setCsvText(''); setCsvPreview([]); setCsvMsg(''); }} className="text-gray-400 hover:text-gray-600">✕</button>
+          </div>
+          <p className="text-xs text-gray-500">Required column: <code>name</code>. Optional: brand, model, serial, barcode, type, location, container, tag</p>
+          <textarea value={csvText} onChange={e => { setCsvText(e.target.value); setCsvPreview(parseCsv(e.target.value)); }}
+            rows={6} placeholder="name,brand,type,serial&#10;First Aid Kit,Lifeguard,Medical,SN001"
+            className="w-full border border-gray-300 rounded p-2 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          {csvPreview.length > 0 && (
+            <p className="text-xs text-gray-600">{csvPreview.length} rows parsed</p>
+          )}
+          {csvMsg && <p className="text-xs text-green-600">{csvMsg}</p>}
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => { setShowCsvImport(false); setCsvText(''); setCsvPreview([]); }} className="px-3 py-1.5 border rounded text-sm text-gray-600">Cancel</button>
+            <button onClick={importCsv} disabled={!csvPreview.length || csvImporting}
+              className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-semibold disabled:opacity-50">
+              {csvImporting ? 'Importing…' : `Import ${csvPreview.length} rows`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Add/Edit form */}
+      {showAdd && (
+        <EquipmentForm
+          token={token}
+          onSaved={() => { setShowAdd(false); load(); }}
+          onCancel={() => setShowAdd(false)}
+        />
+      )}
+
+      {/* Table */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="px-4 py-2 border-b bg-gray-50 flex items-center gap-3 text-xs font-medium text-gray-500 uppercase">
+          <input type="checkbox" checked={selected.size === filtered.length && filtered.length > 0}
+            onChange={toggleAll} className="w-3.5 h-3.5" />
+          <span className="flex-1">Name ({filtered.length})</span>
+          <span className="w-24 hidden sm:block">Type</span>
+          <span className="w-28 hidden md:block">Container</span>
+          <span className="w-20">Status</span>
+          <span className="w-16">Deploy</span>
+          <span className="w-16">Actions</span>
+        </div>
+        {filtered.length === 0 && (
+          <div className="text-center text-gray-400 py-8 text-sm">
+            {items.length === 0 ? 'No equipment yet — add one or sync from D4H.' : 'No items match the filter.'}
+          </div>
+        )}
+        {filtered.map(item => (
+          editId === item.id ? (
+            <div key={item.id} className="border-b">
+              <EquipmentForm
+                token={token}
+                existing={item}
+                onSaved={() => { setEditId(null); load(); }}
+                onCancel={() => setEditId(null)}
+                inline
+              />
+            </div>
+          ) : (
+            <div key={item.id} className={`flex items-center gap-3 px-4 py-2.5 border-b text-sm hover:bg-gray-50 ${selected.has(item.id) ? 'bg-blue-50' : ''}`}>
+              <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} className="w-3.5 h-3.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-gray-800 truncate">{item.name}</div>
+                <div className="text-xs text-gray-400">{[item.tag, item.serial, item.ref].filter(Boolean).join(' · ')}</div>
+              </div>
+              <span className="w-24 text-xs text-gray-500 hidden sm:block truncate">{item.type ?? '—'}</span>
+              <span className="w-28 text-xs text-gray-500 hidden md:block truncate">{item.container ?? '—'}</span>
+              <span className={`w-20 text-xs font-medium px-2 py-0.5 rounded-full text-center ${
+                item.status === 'available' ? 'bg-green-100 text-green-700' :
+                item.status === 'deployed' ? 'bg-blue-100 text-blue-700' :
+                'bg-gray-100 text-gray-500'}`}>
+                {item.status}
+              </span>
+              <span className="w-16 text-center text-xs">{item.deployable ? '✓' : '—'}</span>
+              <div className="w-16 flex gap-1 shrink-0">
+                <button onClick={() => setEditId(item.id)} className="text-xs text-blue-600 hover:underline">Edit</button>
+                <button onClick={() => deleteItem(item.id)} className="text-xs text-red-400 hover:text-red-600">✕</button>
+              </div>
+            </div>
+          )
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EquipmentForm({ token, existing, onSaved, onCancel, inline }: {
+  token: string; existing?: LocalEquipment;
+  onSaved: () => void; onCancel: () => void; inline?: boolean;
+}) {
+  const [form, setForm] = useState({
+    name: existing?.name ?? '',
+    brand: existing?.brand ?? '',
+    model: existing?.model ?? '',
+    serial: existing?.serial ?? '',
+    barcode: existing?.barcode ?? '',
+    ref: existing?.ref ?? '',
+    type: existing?.type ?? '',
+    category: existing?.category ?? '',
+    location: existing?.location ?? '',
+    container: existing?.container ?? '',
+    status: existing?.status ?? 'available',
+    deployable: existing?.deployable ?? 0,
+    notes: existing?.notes ?? '',
+    tag: existing?.tag ?? '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (!form.name.trim()) return;
+    setSaving(true);
+    const url = existing ? `/api/equipment/${existing.id}` : '/api/equipment';
+    const method = existing ? 'PATCH' : 'POST';
+    await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ ...form, deployable: form.deployable ? 1 : 0 }),
+    });
+    setSaving(false);
+    onSaved();
+  }
+
+  const cls = 'border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+  const wrap = inline ? 'p-4 bg-blue-50 space-y-3' : 'bg-white rounded-xl shadow p-4 border-2 border-blue-300 space-y-3';
+
+  return (
+    <div className={wrap}>
+      <div className="text-sm font-semibold text-gray-800">{existing ? 'Edit Equipment' : 'Add Equipment'}</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {[
+          ['Name *', 'name'], ['Brand', 'brand'], ['Model', 'model'], ['Serial', 'serial'],
+          ['Barcode', 'barcode'], ['Ref / Asset #', 'ref'], ['Location', 'location'], ['Container', 'container'],
+          ['Tag (QR)', 'tag'], ['Notes', 'notes'],
+        ].map(([label, key]) => (
+          <div key={key} className={key === 'notes' ? 'col-span-2' : ''}>
+            <label className="block text-xs text-gray-500 mb-0.5">{label}</label>
+            <input value={(form as any)[key]} onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+              className={`w-full ${cls}`} />
+          </div>
+        ))}
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Type</label>
+          <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className={`w-full ${cls}`}>
+            <option value="">Select…</option>
+            {EQ_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-0.5">Status</label>
+          <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} className={`w-full ${cls}`}>
+            {EQ_STATUS.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-2 pt-4">
+          <input type="checkbox" id="deployable" checked={!!form.deployable}
+            onChange={e => setForm(f => ({ ...f, deployable: e.target.checked ? 1 : 0 }))} className="w-4 h-4" />
+          <label htmlFor="deployable" className="text-sm text-gray-700">Deployable</label>
+        </div>
+      </div>
+      <div className="flex gap-2 justify-end">
+        <button onClick={onCancel} className="px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+        <button onClick={save} disabled={saving || !form.name.trim()}
+          className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
+          {saving ? 'Saving…' : existing ? 'Save' : 'Add'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Presets Tab ───────────────────────────────────────────────────────────────
+
+interface Preset { id: string; name: string; description?: string; containers: string[] }
+
+function PresetsTab({ token }: { token: string }) {
+  const [presets, setPresets]   = useState<Preset[]>([]);
+  const [containers, setContainers] = useState<string[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName]   = useState('');
+  const [newDesc, setNewDesc]   = useState('');
+  const [saving, setSaving]     = useState(false);
+
+  const authHdr = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+
+  async function load() {
+    setLoading(true);
+    const [pRes, cRes] = await Promise.all([
+      fetch('/api/equipment/presets',    { headers: { Authorization: `Bearer ${token}` } }),
+      fetch('/api/equipment/containers', { headers: { Authorization: `Bearer ${token}` } }),
+    ]);
+    if (pRes.ok) { const d = await pRes.json(); setPresets(d.presets ?? []); }
+    if (cRes.ok) { const d = await cRes.json(); setContainers(d.containers ?? []); }
+    setLoading(false);
+  }
+
+  async function createPreset() {
+    if (!newName.trim()) return;
+    setSaving(true);
+    const res = await fetch('/api/equipment/presets', {
+      method: 'POST', headers: authHdr,
+      body: JSON.stringify({ name: newName.trim(), description: newDesc.trim() || null }),
+    });
+    if (res.ok) { const d = await res.json(); setPresets(prev => [...prev, d.preset]); }
+    setNewName(''); setNewDesc(''); setCreating(false); setSaving(false);
+  }
+
+  async function deletePreset(id: string) {
+    if (!confirm('Delete this preset?')) return;
+    await fetch(`/api/equipment/presets/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    setPresets(prev => prev.filter(p => p.id !== id));
+  }
+
+  async function addContainer(presetId: string, container: string) {
+    const res = await fetch(`/api/equipment/presets/${presetId}/containers`, {
+      method: 'POST', headers: authHdr, body: JSON.stringify({ container }),
+    });
+    if (res.ok) setPresets(prev => prev.map(p => p.id === presetId ? { ...p, containers: [...p.containers, container] } : p));
+  }
+
+  async function removeContainer(presetId: string, container: string) {
+    await fetch(`/api/equipment/presets/${presetId}/containers`, {
+      method: 'DELETE', headers: authHdr, body: JSON.stringify({ container }),
+    });
+    setPresets(prev => prev.map(p => p.id === presetId ? { ...p, containers: p.containers.filter(c => c !== container) } : p));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  if (loading) return <div className="text-center text-gray-500 py-12">Loading presets…</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl shadow p-4">
+        <p className="text-sm text-gray-600 mb-3">
+          Presets group containers into named deployment packages (e.g. "Tech Truck" = Tech Trailer + Rope Cache).
+          When you deploy a preset to an operation, all equipment marked <strong>deployable</strong> in those containers becomes available.
+        </p>
+      </div>
+
+      {presets.map(preset => (
+        <div key={preset.id} className="bg-white rounded-xl shadow p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-semibold text-gray-800 flex-1">{preset.name}</span>
+            {preset.description && <span className="text-xs text-gray-500">{preset.description}</span>}
+            <button onClick={() => deletePreset(preset.id)} className="text-xs text-red-400 hover:text-red-600">Delete</button>
+          </div>
+          <div className="flex flex-wrap gap-2 mb-3">
+            {preset.containers.map(c => (
+              <span key={c} className="flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                {c}
+                <button onClick={() => removeContainer(preset.id, c)} className="hover:text-red-600 ml-1">✕</button>
+              </span>
+            ))}
+            {preset.containers.length === 0 && <span className="text-xs text-gray-400">No containers added yet.</span>}
+          </div>
+          {containers.length > 0 && (
+            <div className="flex gap-2">
+              <select className="border border-gray-300 rounded p-1.5 text-sm" defaultValue=""
+                onChange={e => { if (e.target.value) { addContainer(preset.id, e.target.value); e.target.value = ''; } }}>
+                <option value="" disabled>+ Add container…</option>
+                {containers.filter(c => !preset.containers.includes(c)).map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {containers.length === 0 && (
+            <p className="text-xs text-gray-400">Assign containers to equipment in the Registry tab first.</p>
+          )}
+        </div>
+      ))}
+
+      {creating ? (
+        <div className="bg-white rounded-xl shadow p-4 border-2 border-blue-300 space-y-3">
+          <div className="text-sm font-semibold">New Preset</div>
+          <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Preset name *"
+            className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input value={newDesc} onChange={e => setNewDesc(e.target.value)} placeholder="Description (optional)"
+            className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => setCreating(false)} className="px-3 py-1.5 border rounded text-sm text-gray-600">Cancel</button>
+            <button onClick={createPreset} disabled={saving || !newName.trim()}
+              className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-semibold disabled:opacity-50">
+              {saving ? 'Creating…' : 'Create'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setCreating(true)}
+          className="w-full py-3 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors">
+          + New Preset
+        </button>
+      )}
     </div>
   );
 }

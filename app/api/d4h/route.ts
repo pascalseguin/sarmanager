@@ -231,6 +231,35 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ repairId: data?.data?.id ?? data?.id, repair: data?.data ?? data });
     }
 
+    // ── Get current on-call members ───────────────────────────────────────────
+    if (action === 'getOnCall') {
+      const teamId = await getTeamId(token, teamIdOverride);
+      try {
+        const data = await d4hFetch(token, `/v3/team/${teamId}/duty-roster/on-call`);
+        const entries: any[] = data?.data ?? data?.results ?? [];
+        return NextResponse.json({
+          onCall: entries.map((e: any) => ({
+            memberId: e.member?.id ?? e.member_id ?? e.id,
+            name: e.member?.name ?? e.name,
+            endsAt: e.end_at ?? e.ends_at ?? null,
+          })),
+        });
+      } catch { return NextResponse.json({ onCall: [] }); }
+    }
+
+    // ── Record attendance for a member on an activity ─────────────────────────
+    if (action === 'recordAttendance') {
+      const { memberId, activityId } = body;
+      const teamId = await getTeamId(token, teamIdOverride);
+      try {
+        const data = await d4hFetch(token, `/v3/team/${teamId}/activities/${activityId}/attendees`, 'POST', {
+          member_id: Number(memberId),
+          status: 'Attending',
+        });
+        return NextResponse.json({ attendanceId: data?.data?.id ?? data?.id ?? null });
+      } catch { return NextResponse.json({ attendanceId: null }); }
+    }
+
     logError('d4h', `Unknown action: ${action}`);
     return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
   } catch (err) {

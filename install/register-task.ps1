@@ -43,11 +43,32 @@ shell.Run """" & nodeExe & """ server.js", 0, False
 '@
 Set-Content (Join-Path $AppDir 'start-silent.vbs') $silentVbs -Encoding ASCII
 
-# Write launch.vbs -- desktop shortcut target: starts the task then opens browser
+# Write launch.vbs -- desktop shortcut target: starts the task then polls until ready
 $launchVbs = @"
+Dim port, url, shell, http, ready, i
+port = $Port
+url  = "http://localhost:" & port
 Set shell = CreateObject("WScript.Shell")
-shell.Run "powershell.exe -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""Start-ScheduledTask -TaskName 'SARManager' -ErrorAction SilentlyContinue; Start-Sleep 3""", 0, True
-shell.Run "http://localhost:$Port"
+Set http  = CreateObject("MSXML2.XMLHTTP")
+
+' Ensure the scheduled task is running
+shell.Run "powershell.exe -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""Start-ScheduledTask -TaskName 'SARManager' -ErrorAction SilentlyContinue""", 0, True
+
+' Poll until the server responds (up to 30 seconds)
+ready = False
+For i = 1 To 30
+    On Error Resume Next
+    http.Open "GET", url, False
+    http.Send
+    If Err.Number = 0 And http.Status >= 100 Then
+        ready = True
+        Exit For
+    End If
+    On Error GoTo 0
+    WScript.Sleep 1000
+Next
+
+shell.Run url
 "@
 Set-Content (Join-Path $AppDir 'launch.vbs') $launchVbs -Encoding ASCII
 

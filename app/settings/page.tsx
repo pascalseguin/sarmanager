@@ -10,6 +10,8 @@ export default function SettingsPage() {
     secret: settings.secret,
     accountId: settings.accountId,
     folderId: settings.folderId,
+    ippFolderId: settings.ippFolderId ?? '',
+    ringFolderId: settings.ringFolderId ?? '',
     d4hToken: settings.d4hToken,
     d4hTeamId: settings.d4hTeamId,
     d4hTeamName: settings.d4hTeamName,
@@ -240,6 +242,33 @@ export default function SettingsPage() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+
+          {/* ── Feature folder routing ── */}
+          <div className="bg-white p-6 rounded shadow">
+            <h2 className="text-lg font-semibold text-gray-700 mb-2">Feature Folder Routing</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              Optional: enter CalTopo folder IDs to route markers and rings into named layers.
+              These match the Electron app convention: <code className="text-xs bg-gray-100 px-1 rounded">00 - Critical Incident Info</code> for IPP/LKP/PLS
+              and <code className="text-xs bg-gray-100 px-1 rounded">02 - LPB</code> for ISRID rings.
+              Leave blank to place features in the map root.
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">IPP/LKP/PLS Folder ID</label>
+                <input type="text" value={form.ippFolderId}
+                  onChange={e => setForm(f => ({ ...f, ippFolderId: e.target.value }))}
+                  placeholder="e.g. abc123 (from CalTopo folder URL)"
+                  className="w-full p-2 border border-gray-300 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">ISRID Rings Folder ID</label>
+                <input type="text" value={form.ringFolderId}
+                  onChange={e => setForm(f => ({ ...f, ringFolderId: e.target.value }))}
+                  placeholder="e.g. def456"
+                  className="w-full p-2 border border-gray-300 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
             </div>
           </div>
 

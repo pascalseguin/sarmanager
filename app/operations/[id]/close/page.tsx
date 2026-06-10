@@ -49,7 +49,7 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
   const [closing, setClosing] = useState(false);
   const [closed, setClosed] = useState(false);
 
-  const [activeDoc, setActiveDoc] = useState<'ics201' | 'ics204' | 'ics211' | 'turnout' | null>(null);
+  const [activeDoc, setActiveDoc] = useState<'fn1' | 'ics201' | 'ics204' | 'ics211' | 'turnout' | null>(null);
   const [copied, setCopied] = useState('');
 
   useEffect(() => { if (!loading && !user) router.replace('/login'); }, [user, loading]);
@@ -176,6 +176,128 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
     ].join('\n');
   }
 
+  function seasarFirstNotice(): string {
+    if (!op) return '';
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('en-CA');
+    const timeStr = now.toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' });
+    const ippUtm = op.ipp_type === 'pls' ? (op.pls_utm ?? op.active_ipp_utm) : (op.lkp_utm ?? op.active_ipp_utm);
+    const lastSeenPlace = op.ipp_type === 'pls' ? (op.pls_location ?? '') : (op.last_seen_location ?? '');
+    const lastSeenDate = op.pls_time ? new Date(op.pls_time).toLocaleDateString('en-CA') : '_______________';
+    const lastSeenTime = op.pls_time ? new Date(op.pls_time).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' }) : '_______________';
+
+    const header = (title: string) => [
+      `════════════════════════════════════════════════════════════════`,
+      `  SEASAR ${title}`,
+      `════════════════════════════════════════════════════════════════`,
+      `  Incident Name: ${op.name.padEnd(28)} Date: ${dateStr}   Time: ${timeStr}`,
+      `  D4H#: ${(op.d4h_incident_id ?? '___________').padEnd(20)}`,
+      ``,
+      `  Completed by: ${(incidentCommander || '_______________').padEnd(24)} Number: _______________`,
+      `  Agency: ${(op.tasking_agency ?? '_______________').padEnd(26)} Contact: ${op.oic_name ?? '_______________'}`,
+      `  Agency Phone: ${(op.oic_phone ?? '_______________').padEnd(22)} Operational Period: 10 hrs`,
+      `  SEASAR IC: ${(incidentCommander || '_______________').padEnd(24)} Planning: ${(planningChief || '_______________').padEnd(18)} Ops: ${opsChief || '_______________'}`,
+      ``,
+    ].join('\n');
+
+    const page1 = [
+      header('First Notice – PERSON  (Page 1)'),
+      `  Name of Missing Person: ${op.lost_person_name ?? '_______________________________________________'}`,
+      `  Date of Birth:          _______________   Cell #: _______________`,
+      ``,
+      `  Date Last Seen: ${lastSeenDate.padEnd(20)} Time Last Seen: ${lastSeenTime.padEnd(20)} Place: ${lastSeenPlace || '_______________'}`,
+      ``,
+      `  Age: ${op.lost_person_age ? String(op.lost_person_age).padEnd(12) : '_______'} Height: _______________   Weight: _______________`,
+      ``,
+      `  Skin/Hair: ___________________________   Clothing: ${op.subject_clothing ?? '_______________________________________________'}`,
+      ``,
+      `  Shoes/Gear: ${op.subject_gear ?? '______________________________________________'}`,
+      ``,
+      `  Circumstances:`,
+      `    ${op.subject_circumstance ?? '_______________________________________________________________'}`,
+      ``,
+      `  Health Concerns:`,
+      `    ${op.subject_condition ?? '_______________________________________________________________'}`,
+      ``,
+      `  Safety Concerns:`,
+      `    ${op.safety_concerns ?? '_______________________________________________________________'}`,
+      ``,
+      `  Relevant History:`,
+      `    _______________________________________________________________`,
+      ``,
+      `  Tasking Agency Instructions:`,
+      `    _______________________________________________________________`,
+      ``,
+      `  Specialty Team Requested:`,
+      `    _______________________________________________________________`,
+      ``,
+      `  Requests of Tasking Agency:`,
+      `    _______________________________________________________________`,
+      ``,
+      `  Other:`,
+      `    _______________________________________________________________`,
+      ``,
+      `  Social media  ☐ Yes  ☐ No`,
+    ].join('\n');
+
+    const page2 = [
+      header('First Notice – PERSON  (Page 2)'),
+      `  Missing Person Behavior Category and Notes:`,
+      `  (Category: ________________________________________________)`,
+      ``,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      ``,
+      `  Contingencies (Weather, Dark, Convergent Volunteers Likely):`,
+      ``,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+      `  _______________________________________________________________`,
+    ].join('\n');
+
+    const briefing = [
+      header('Briefing Information Sheet'),
+      `  Name of Missing Person: ${op.lost_person_name ?? '_______________________________________________'}`,
+      `  Date Last Seen: ${lastSeenDate.padEnd(20)} Time Last Seen: ${lastSeenTime.padEnd(20)} Place: ${lastSeenPlace || '_______________'}`,
+      `  Age: ${op.lost_person_age ? String(op.lost_person_age).padEnd(12) : '_______'} Height: _______________   Weight: _______________`,
+      `  Skin/Hair: _________________________   Clothing: ${op.subject_clothing ?? '_____________________________'}`,
+      `  Shoes/Gear: ${op.subject_gear ?? '______________________________________________________'}`,
+      ``,
+      `  Circumstances:`,
+      `    ${op.subject_circumstance ?? '_______________________________________________________________'}`,
+      ``,
+      `  Health Concerns:`,
+      `    ${op.subject_condition ?? '_______________________________________________________________'}`,
+      ``,
+      `  Safety Concerns:`,
+      `    ${op.safety_concerns ?? '_______________________________________________________________'}`,
+      ``,
+      `  Relevant History:`,
+      `    _______________________________________________________________`,
+      ``,
+      `  Current Weather: ___________   Temp: _______  Wind: _______  Precip: _______`,
+      `  Forecast Weather: __________   Temp: _______  Wind: _______  Precip: _______`,
+      ``,
+      `  Volunteers on Scene: ____   Family on Scene: ____   Media on Scene: ____   CISM: ____`,
+      ``,
+      `  Required Team Equipment: _______________________________________________`,
+      `  Required Personal Equipment: __________________________________________`,
+      ``,
+      `  CP Frequency: ________   CP Phone: 403 928 1231   Drop Dead Time: ________   Emergency Code: No Duff`,
+      ``,
+      `  IPP (${op.ipp_type?.toUpperCase() ?? 'LKP'}): ${lastSeenPlace || '_______________'}   UTM: ${ippUtm ?? '_______________'}`,
+      `  CalTopo: ${op.caltopo_map_id ? `https://caltopo.com/m/${op.caltopo_map_id}` : 'N/A'}`,
+    ].join('\n');
+
+    return [page1, '', page2, '', briefing].join('\n');
+  }
+
   function turnout(): string {
     if (!op) return '';
     const responding = checkins.filter(c => c.fit_for_field);
@@ -213,6 +335,7 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
   if (closed) return <div className="min-h-screen bg-gray-100 flex items-center justify-center"><p className="text-green-600 font-semibold">Operation closed. Returning…</p></div>;
 
   const DOCS = [
+    { id: 'fn1', label: 'SEASAR First Notice (Person + Briefing)', fn: seasarFirstNotice },
     { id: 'ics201', label: 'ICS 201 — Incident Briefing', fn: ics201 },
     { id: 'ics204', label: 'ICS 204 — Assignment List', fn: ics204 },
     { id: 'ics211', label: 'ICS 211 — Check-In List', fn: ics211 },

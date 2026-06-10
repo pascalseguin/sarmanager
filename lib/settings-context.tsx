@@ -7,6 +7,8 @@ export interface CalTopoSettings {
   secret: string;
   accountId: string;
   folderId: string;
+  ippFolderId: string;   // Folder for IPP/LKP/PLS markers ("00 - Critical Incident Info")
+  ringFolderId: string;  // Folder for ISRID rings ("02 - LPB")
   defaultGeoJSON: GeoJSON.FeatureCollection | null;
   defaultGeoJSONName: string;
   d4hToken: string;
@@ -28,6 +30,8 @@ const defaultSettings: CalTopoSettings = {
   secret: '',
   accountId: '',
   folderId: '',
+  ippFolderId: '',
+  ringFolderId: '',
   defaultGeoJSON: null,
   defaultGeoJSONName: '',
   d4hToken: '',
@@ -44,7 +48,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) setSettings(JSON.parse(stored));
+      if (stored) setSettings({ ...defaultSettings, ...JSON.parse(stored) });
     } catch {
       // ignore
     }
