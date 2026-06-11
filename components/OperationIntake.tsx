@@ -250,6 +250,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
   const [form, setForm] = useState<FormState>(blank());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [d4hWarning, setD4hWarning] = useState('');
 
   // ── Post-creation deploy wizard state ────────────────────────────────────
   type RolloutStatus = 'idle' | 'running' | 'done' | 'error' | 'skipped';
@@ -405,11 +406,11 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
             if (isExercise) d4hExerciseId = String(data.exerciseId ?? data.exercise?.id);
             else d4hIncidentId = String(data.incidentId ?? data.incident?.id);
           } else {
-            console.warn('D4H creation failed:', data.error);
+            setD4hWarning(`D4H creation failed: ${data.error ?? 'unknown error'} — you can link it manually later.`);
           }
         }
-      } catch {
-        // Non-fatal: still create the operation
+      } catch (e: unknown) {
+        setD4hWarning(`D4H creation error: ${e instanceof Error ? e.message : 'unknown error'} — you can link it manually later.`);
       }
     }
 
@@ -808,6 +809,13 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
             <div className="text-green-700 text-xs">{op.name}</div>
           </div>
         </div>
+
+        {d4hWarning && (
+          <div className="bg-yellow-50 border border-yellow-300 rounded-xl px-5 py-3 flex items-start gap-3">
+            <span className="text-yellow-600 text-lg shrink-0">⚠</span>
+            <div className="text-yellow-800 text-sm">{d4hWarning}</div>
+          </div>
+        )}
 
         {/* Decision */}
         {deployMode === 'decide' && (

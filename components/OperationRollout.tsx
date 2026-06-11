@@ -282,11 +282,24 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         ? `https://caltopo.com/m/${op.caltopo_map_id}`
         : (auto.caltopoUrl ?? '');
 
-      // Create the incident or exercise
-      const d = new Date();
-      const dateStr = d.toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' })
-        .toUpperCase().replace(/ /g, '-').replace(',', '');
-      const tempTitle = `${dateStr} PENDING`;
+      // Build D4H title using the same op-name template as CalTopo
+      const albertaDate = new Date().toLocaleDateString('en-CA', {
+        timeZone: 'America/Edmonton', year: 'numeric', month: '2-digit', day: '2-digit',
+      });
+      const ippDescForName = (op.ipp_type === 'pls' ? op.pls_location : op.last_seen_location) ?? '';
+      const rawLocation = ippDescForName.split(',')[0]?.trim() || 'Location';
+      const locationSlug = rawLocation.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '-');
+      const nameTemplate = settings.opNameTemplate || '{location}-{date}-{d4h_id}';
+      const applyNameTemplate = (d4hId: string) =>
+        nameTemplate
+          .replace(/\{location\}/g, locationSlug)
+          .replace(/\{date\}/g, albertaDate)
+          .replace(/\{d4h_id\}/g, d4hId)
+          .replace(/\{subject\}/g, op.lost_person_name ?? '')
+          .replace(/[-–]{2,}/g, '-')
+          .replace(/^[-–\s]+|[-–\s]+$/g, '')
+          .trim() || `${locationSlug}-${albertaDate}`;
+      const tempTitle = applyNameTemplate('PENDING');
       const isExercise = op.d4h_activity_type === 'exercise';
 
       const createAction = isExercise ? 'createExercise' : 'createIncident';
@@ -302,7 +315,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       if (!activityId) throw new Error(`D4H ${createAction} succeeded but returned no ID — response: ${JSON.stringify(createResult).slice(0, 200)}`);
 
       // Rename with actual D4H ID (non-fatal)
-      const finalTitle = `${dateStr} #${activityId}`;
+      const finalTitle = applyNameTemplate(String(activityId));
       try {
         const updateAction = isExercise ? 'updateExercise' : 'updateIncident';
         const idKey = isExercise ? 'exerciseId' : 'incidentId';
@@ -536,14 +549,6 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       const subject = [age, sex, profile].filter(Boolean).join(' ');
       const callMsg = `${agency} SAR callout. Locate missing ${subject}. Please respond immediately to your search manager.`;
 
-      // D4H duty callout (records the callout in D4H)
-      const incidentId = auto.d4hIncidentId ?? op.d4h_incident_id;
-      const d4hResult  = await callD4H('sendCallout', { message: smsMsg, incidentId }).catch(() => ({ calloutId: null }));
-      if (d4hResult.calloutId) {
-        const updated = await apiPatch(op.id, { d4h_callout_id: String(d4hResult.calloutId) });
-        if (updated) onUpdated(updated);
-      }
-
       // Twilio SMS + voice call in parallel (if configured)
       if (settings.twilioAccountSid && settings.twilioAuthToken && settings.twilioFromNumber) {
         const twilioBase = {
@@ -559,7 +564,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         ]);
       }
 
-      setStatus('callout', 'done', { calloutId: d4hResult.calloutId ? String(d4hResult.calloutId) : undefined });
+      setStatus('callout', 'done');
     } catch (e: unknown) {
       setError('callout', e instanceof Error ? e.message : 'Callout error');
     }
@@ -1144,165 +1149,7 @@ function D4HUpdatePanel({ op, callD4H, d4hConfigured }: { op: Operation; callD4H
   );
 }
 
-// ── Second Callout panel ──────────────────────────────────────────────────────
-
-function SecondCalloutPanel({ op, callD4H, d4hConfigured, defaultSMS }: {
-  op: Operation; callD4H: D4HCallFn; d4hConfigured: boolean; defaultSMS: string;
-}) {
-  const [message, setMessage] = useState(defaultSMS);
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState('');
-  const [error, setError] = useState('');
-  const [responses, setResponses] = useState<{ id: string; name: string; status: string }[]>([]);
-  const [loadingResponses, setLoadingResponses] = useState(false);
-
-  async function sendCallout() {
-    if (!message.trim()) return;
-    setSending(true); setError('');
-    try {
-      const trimmed = message.slice(0, 150);
-      await callD4H('sendCallout', {
-        message: trimmed,
-        incidentId: op.d4h_incident_id,
-      });
-      setSent(new Date().toLocaleTimeString('en-CA'));
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to send callout');
-    } finally {
-      setSending(false);
-    }
-  }
-
-  async function loadResponses() {
-    if (!op.d4h_callout_id) return;
-    setLoadingResponses(true);
-    try {
-      const data = await callD4H('getCalloutResponses', { calloutId: op.d4h_callout_id });
-      const raw = (data.responses as Record<string, unknown>[]) ?? [];
-      setResponses(raw.map(r => ({
-        id: String(r.id ?? ''),
-        name: String((r.member as Record<string, unknown>)?.name ?? r.name ?? 'Unknown'),
-        status: String(r.status ?? r.response ?? 'pending'),
-      })));
-    } catch {
-      // ignore
-    } finally {
-      setLoadingResponses(false);
-    }
-  }
-
-  useEffect(() => { loadResponses(); }, []);
-
-  if (!d4hConfigured) {
-    return (
-      <div className="bg-white rounded-xl shadow p-6 text-center text-gray-600">
-        <p className="mb-2">D4H token not configured.</p>
-        <a href="/settings" className="text-sm text-blue-600 hover:underline">Go to Settings →</a>
-      </div>
-    );
-  }
-
-  const charCount = message.length;
-
-  return (
-    <div className="space-y-4">
-      <div className="bg-white rounded-xl shadow p-6">
-        <h3 className="font-bold text-gray-800 mb-1">Second Callout</h3>
-        <p className="text-sm text-gray-500 mb-4">
-          Send a follow-up D4H callout (via Twilio) to the team. Max 150 characters.
-        </p>
-
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-2">Callout message</label>
-          <textarea
-            value={message}
-            onChange={e => setMessage(e.target.value.slice(0, 150))}
-            rows={3}
-            className={`w-full p-3 border rounded-lg focus:outline-none focus:ring-2 text-sm resize-none font-mono ${charCount >= 150 ? 'border-red-400 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'}`}
-          />
-          <div className={`text-xs mt-1 text-right font-medium ${charCount >= 150 ? 'text-red-600' : charCount >= 130 ? 'text-yellow-600' : 'text-gray-600'}`}>
-            {charCount}/150 chars
-          </div>
-        </div>
-
-        {error && <p className="text-sm text-red-600 mb-3">{error}</p>}
-        {sent && <p className="text-sm text-green-600 mb-3">✓ Callout sent at {sent}</p>}
-
-        <div className="flex gap-3 mb-4">
-          <button
-            onClick={sendCallout}
-            disabled={sending || !message.trim()}
-            className="flex-1 bg-orange-600 text-white py-2.5 rounded-lg text-sm font-bold hover:bg-orange-700 disabled:opacity-50 transition-colors"
-          >
-            {sending ? 'Sending…' : '📣 Send Callout via D4H'}
-          </button>
-          <button
-            onClick={() => setMessage(defaultSMS)}
-            className="px-4 py-2.5 border border-gray-300 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-          >
-            Reset
-          </button>
-        </div>
-
-        <div className="text-xs text-gray-500">
-          Alternate templates:
-        </div>
-        <div className="flex flex-wrap gap-2 mt-2">
-          {[
-            `URGENT — All available members report to SAR Base immediately. Active mission in progress.`,
-            `Stand down. Subject located. Thank you for your response. All teams return to base.`,
-            `Second callout — additional searchers needed. Report to fire hall by ${new Date(Date.now() + 3600000).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' })}.`,
-          ].map(t => (
-            <button
-              key={t}
-              onClick={() => setMessage(t.slice(0, 150))}
-              className="text-xs px-3 py-1.5 border border-gray-200 rounded-full text-gray-600 hover:border-orange-400 hover:text-orange-600 transition-colors text-left"
-            >
-              {t.slice(0, 60)}…
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Response tracker */}
-      {op.d4h_callout_id && (
-        <div className="bg-white rounded-xl shadow p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="font-bold text-gray-800">Callout Responses</h3>
-            <button onClick={loadResponses} disabled={loadingResponses} className="text-sm text-blue-600 hover:underline">
-              {loadingResponses ? '…' : 'Refresh'}
-            </button>
-          </div>
-
-          {responses.length === 0 ? (
-            <p className="text-sm text-gray-600">No responses yet — or not available from D4H API.</p>
-          ) : (
-            <div className="space-y-2">
-              {responses.map(r => {
-                const s = r.status.toUpperCase();
-                const isYes = s === 'ATTENDING' || s === '1' || s === 'YES';
-                const isNo = s === 'ABSENT' || s === 'NO' || s === 'UNAVAILABLE';
-                return (
-                  <div key={r.id} className="flex items-center justify-between p-2 rounded-lg bg-gray-50">
-                    <span className="text-sm text-gray-700">{r.name}</span>
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${isYes ? 'bg-green-100 text-green-700' : isNo ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                      {isYes ? '✓ Attending' : isNo ? '✗ Unavailable' : r.status}
-                    </span>
-                  </div>
-                );
-              })}
-              <div className="text-xs text-gray-600 pt-1">
-                {responses.filter(r => ['ATTENDING', '1', 'YES'].includes(r.status.toUpperCase())).length} attending ·{' '}
-                {responses.filter(r => ['ABSENT', 'NO', 'UNAVAILABLE'].includes(r.status.toUpperCase())).length} absent ·{' '}
-                {responses.filter(r => !['ATTENDING', '1', 'YES', 'ABSENT', 'NO', 'UNAVAILABLE'].includes(r.status.toUpperCase())).length} pending
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+// (SecondCalloutPanel removed — D4H callout not supported)
 
 // ── Inspection result type (mirrors equipment/page.tsx InspResult) ───────────
 
@@ -1365,37 +1212,12 @@ interface OpEquipLog {
 const DEPLOY_PRESETS_KEY = 'sarmanager_deploy_presets';
 const OP_EQ_LOG_KEY      = 'sarmanager_op_equipment_logs';
 
-const DEFAULT_PRESETS: DeployPreset[] = [
-  {
-    id: 'default-hasty',
-    name: 'Hasty Team Pack',
-    description: 'Standard 4-person hasty search loadout',
-    items: ['SAR packs × 4', 'Navigation kit', 'Radio × 2', 'First aid kit', 'Rope bag'],
-    equipmentIds: [],
-  },
-  {
-    id: 'default-rope',
-    name: 'Technical Rescue Kit',
-    description: 'Rope rescue and vertical terrain equipment',
-    items: ['Rope bag', 'Harnesses × 4', 'Carabiners', 'Belay devices', 'Helmets × 4'],
-    equipmentIds: [],
-  },
-  {
-    id: 'default-medical',
-    name: 'Medical Response Pack',
-    description: 'Enhanced medical and patient packaging',
-    items: ['AED', 'Oxygen kit', 'Patient packaging', 'Stretcher', 'Trauma kit'],
-    equipmentIds: [],
-  },
-];
-
 function loadDeployPresets(): DeployPreset[] {
   try {
     const stored = JSON.parse(localStorage.getItem(DEPLOY_PRESETS_KEY) ?? 'null');
     if (Array.isArray(stored)) return stored;
   } catch { /* empty */ }
-  localStorage.setItem(DEPLOY_PRESETS_KEY, JSON.stringify(DEFAULT_PRESETS));
-  return DEFAULT_PRESETS;
+  return [];
 }
 
 function saveDeployPresets(p: DeployPreset[]) {
@@ -1458,7 +1280,12 @@ function ServerPresetsSection({ op }: { op: Operation }) {
   if (loading) return null;
   if (serverPresets.length === 0) return null;
 
-  const deployedPresetIds = new Set(deployments.map(d => d.preset_id));
+  // Include presets selected during op intake (stored in deployed_presets_json) as deployed
+  const intakePresetIds = (() => {
+    try { return new Set(JSON.parse((op as any).deployed_presets_json ?? '[]') as string[]); }
+    catch { return new Set<string>(); }
+  })();
+  const deployedPresetIds = new Set([...deployments.map(d => d.preset_id), ...intakePresetIds]);
 
   return (
     <div className="bg-white rounded-xl shadow overflow-hidden mb-4">
@@ -2302,7 +2129,7 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Failed to load map');
-      setFeatures(data.features ?? []);
+      if (data.features?.length > 0) setFeatures(data.features);
       setLastMapRefresh(new Date());
     } catch (e: unknown) {
       setMapError(e instanceof Error ? e.message : 'Map load failed');
@@ -2324,9 +2151,10 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
     loadMap();
   }, [op.id, op.caltopo_map_id]);
   useEffect(() => {
-    const t = setInterval(() => setCheckins(prev => [...prev]), 60000); // force re-render for timer
+    // Re-fetch board every 30s so new check-ins appear automatically
+    const t = setInterval(() => loadBoard(), 30000);
     return () => clearInterval(t);
-  }, []);
+  }, [op.id]);
 
   // Poll CalTopo every 30 s for live map updates (teams, waypoints, etc.)
   useEffect(() => {
@@ -2472,19 +2300,20 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
           <div className="space-y-2 text-xs">
             {/* Time since last radio check scene-wide */}
             {(() => {
-              const lastHeard = checkins
-                .filter(c => c.last_heard_at)
-                .map(c => new Date(c.last_heard_at!).getTime())
-                .sort((a, b) => b - a)[0];
-              const lastSceneMins = lastHeard ? Math.round((Date.now() - lastHeard) / 60000) : null;
-              const sceneColor = lastSceneMins == null ? 'text-gray-400'
-                : lastSceneMins > redMins ? 'text-red-600 font-bold'
-                : lastSceneMins > yellowMins ? 'text-yellow-600 font-semibold'
+              // "Last heard" = time since subject was last seen (PLS time)
+              const plsMs = op.pls_time ? new Date(op.pls_time).getTime() : null;
+              const minsSincePLS = plsMs ? Math.round((Date.now() - plsMs) / 60000) : null;
+              const h = minsSincePLS != null ? Math.floor(minsSincePLS / 60) : null;
+              const m = minsSincePLS != null ? minsSincePLS % 60 : null;
+              const label = h != null ? (h > 0 ? `${h}h ${m}m` : `${m}m`) : '—';
+              const color = minsSincePLS == null ? 'text-gray-400'
+                : minsSincePLS > 180 ? 'text-red-600 font-bold'
+                : minsSincePLS > 60 ? 'text-yellow-600 font-semibold'
                 : 'text-green-700 font-semibold';
               return (
                 <div className="flex justify-between items-center">
-                  <span className="text-gray-500">Last heard</span>
-                  <span className={sceneColor}>{lastSceneMins != null ? `${lastSceneMins}m ago` : '—'}</span>
+                  <span className="text-gray-500">Subject last heard</span>
+                  <span className={color}>{label}</span>
                 </div>
               );
             })()}
@@ -2500,7 +2329,17 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
               <span className="text-gray-500 shrink-0">LPB Profile</span>
               <span className="font-semibold text-gray-800 text-right">{profile.label}</span>
             </div>
-            <div className="text-gray-400 text-xs">{profile.emoji} 50% zone: {profile.distances.find(d => d.pct === 50)?.km ?? '?'} km</div>
+            <div className="text-gray-400 text-xs space-y-0.5">
+              {[25, 50, 75, 95].map(pct => {
+                const d = profile.distances.find((d: { pct: number }) => d.pct === pct);
+                return d ? (
+                  <div key={pct} className="flex justify-between">
+                    <span>{profile.emoji} {pct}%</span>
+                    <span className="font-mono">{d.km} km</span>
+                  </div>
+                ) : null;
+              })}
+            </div>
             {/* Personnel counts */}
             <div className="border-t pt-2 flex justify-between">
               <span className="text-gray-500">On scene</span>
@@ -3428,70 +3267,77 @@ function OperationEditTab({ op, onUpdated }: { op: Operation; onUpdated: (op: Op
   );
 
   return (
-    <div className="bg-white rounded-xl shadow p-6 max-w-2xl">
+    <div className="bg-white rounded-xl shadow p-6">
       <div className="flex items-center justify-between mb-5">
         <h3 className="font-bold text-gray-800">Edit Operation Details</h3>
-        {msg && (
-          <span className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</span>
-        )}
+        <div className="flex items-center gap-4">
+          {msg && (
+            <span className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</span>
+          )}
+          <button
+            onClick={save}
+            disabled={saving}
+            className="bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {saving ? 'Saving…' : 'Save Changes'}
+          </button>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        {inp('name', 'Operation Name', 'text', true)}
-
-        <div className="col-span-2 border-t pt-4 mt-1">
-          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Subject</div>
+      {/* 3-column desktop layout */}
+      <div className="grid grid-cols-3 gap-6">
+        {/* Column 1: Subject */}
+        <div className="space-y-3">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide border-b pb-1">Subject</div>
+          {inp('lost_person_name', 'Name')}
+          {inp('lost_person_age', 'Age', 'number')}
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Sex</label>
+            <select
+              value={form.subject_sex ?? ''}
+              onChange={e => set('subject_sex', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">—</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+              <option value="Unknown">Unknown</option>
+            </select>
+          </div>
+          {inp('subject_clothing', 'Clothing')}
+          {inp('subject_gear', 'Gear / Equipment')}
+          {inp('lost_person_description', 'Physical Description')}
         </div>
 
-        {inp('lost_person_name', 'Name')}
-        {inp('lost_person_age', 'Age', 'number')}
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Sex</label>
-          <select
-            value={form.subject_sex ?? ''}
-            onChange={e => set('subject_sex', e.target.value)}
-            className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="">—</option>
-            <option value="Male">Male</option>
-            <option value="Female">Female</option>
-            <option value="Unknown">Unknown</option>
-          </select>
-        </div>
-        {inp('subject_clothing', 'Clothing', 'text', true)}
-        {inp('subject_gear', 'Gear / Equipment', 'text', true)}
-        {inp('lost_person_description', 'Physical Description', 'text', true)}
-
-        <div className="col-span-2 border-t pt-4 mt-1">
-          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Tasking</div>
+        {/* Column 2: Tasking & Location */}
+        <div className="space-y-3">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide border-b pb-1">Tasking</div>
+          {inp('name', 'Operation Name')}
+          {inp('tasking_agency', 'Agency')}
+          {inp('oic_name', 'OIC Name')}
+          {inp('oic_phone', 'OIC Phone', 'tel')}
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide border-b pb-1 mt-4">Location</div>
+          {inp('pls_location', 'PLS Description')}
+          {inp('last_seen_location', 'LKP Description')}
         </div>
 
-        {inp('tasking_agency', 'Agency')}
-        {inp('oic_name', 'OIC Name')}
-        {inp('oic_phone', 'OIC Phone', 'tel')}
-
-        <div className="col-span-2 border-t pt-4 mt-1">
-          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Location</div>
+        {/* Column 3: Condition & Safety */}
+        <div className="space-y-3">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide border-b pb-1">Condition &amp; Safety</div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Circumstances</label>
+            <textarea rows={4} value={form.subject_circumstance ?? ''} onChange={e => set('subject_circumstance', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Medical Condition</label>
+            <textarea rows={3} value={form.subject_condition ?? ''} onChange={e => set('subject_condition', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Safety Concerns</label>
+            <textarea rows={3} value={form.safety_concerns ?? ''} onChange={e => set('safety_concerns', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" />
+          </div>
         </div>
-
-        {inp('pls_location', 'PLS Description', 'text', true)}
-        {inp('last_seen_location', 'LKP Description', 'text', true)}
-
-        <div className="col-span-2 border-t pt-4 mt-1">
-          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Condition &amp; Safety</div>
-        </div>
-
-        {area('subject_circumstance', 'Circumstances')}
-        {area('subject_condition', 'Medical Condition')}
-        {area('safety_concerns', 'Safety Concerns')}
-      </div>
-
-      <div className="flex gap-3 mt-6">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
-          {saving ? 'Saving…' : 'Save Changes'}
-        </button>
       </div>
     </div>
   );
@@ -3571,6 +3417,7 @@ function CommunicationsTab({ op, callD4H, d4hConfigured, settings }: {
   const [scope, setScope] = useState<'all' | 'onscene' | 'notscene'>('all');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [calloutMsg, setCalloutMsg] = useState(() => buildCalloutSMS(op));
+  const [channel, setChannel] = useState<'sms' | 'call' | 'both'>('sms');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState('');
   const [sendErr, setSendErr] = useState('');
@@ -3605,29 +3452,37 @@ function CommunicationsTab({ op, callD4H, d4hConfigured, settings }: {
   function clearAll()  { setSelectedIds(new Set()); }
 
   async function sendCallout() {
+    if (!settings.twilioAccountSid || !settings.twilioAuthToken || !settings.twilioFromNumber) {
+      setSendErr('Twilio not configured — add credentials in Settings.');
+      return;
+    }
     setSending(true); setSendErr(''); setSent('');
     try {
-      // D4H callout — targets the whole roster via D4H duty callout system
-      if (d4hConfigured) {
-        await callD4H('sendCallout', { message: calloutMsg.slice(0, 150), incidentId: op.d4h_incident_id }).catch(() => {});
+      const checkInUrl = typeof window !== 'undefined' ? `${window.location.origin}/checkin/${op.id}` : `/checkin/${op.id}`;
+      const agency = op.tasking_agency ?? 'SAR';
+      const age = op.lost_person_age ? `${op.lost_person_age}yo` : '';
+      const sex = op.subject_sex ? op.subject_sex.toLowerCase() : '';
+      const profileLabel = ISRID[op.subject_category ?? '']?.label ?? 'person';
+      const subject = [age, sex, profileLabel].filter(Boolean).join(' ');
+      const callMsg = `${agency} SAR callout. Locate missing ${subject}. Please respond immediately to your search manager.`;
+      const smsMsg = `${calloutMsg.trim()} ${checkInUrl}`.slice(0, 160);
+      const twilioBase = { accountSid: settings.twilioAccountSid, authToken: settings.twilioAuthToken, fromNumber: settings.twilioFromNumber };
+      const toNums = selectedIds.size > 0
+        ? roster.filter(p => selectedIds.has(p.id) && p.phone).map(p => p.phone!)
+        : undefined; // undefined → API sends to full active roster
+
+      const sends: Promise<Response>[] = [];
+      if (channel === 'sms' || channel === 'both') {
+        sends.push(fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'sms', ...twilioBase, message: smsMsg, ...(toNums ? { to: toNums } : {}) }) }));
       }
-      // Twilio: SMS + voice to configured number (Twilio targets roster via D4H-linked phones)
-      if (settings.twilioAccountSid && settings.twilioAuthToken && settings.twilioFromNumber) {
-        const checkInUrl = typeof window !== 'undefined' ? `${window.location.origin}/checkin/${op.id}` : `/checkin/${op.id}`;
-        const agency = op.tasking_agency ?? 'SAR';
-        const age = op.lost_person_age ? `${op.lost_person_age}yo` : '';
-        const sex = op.subject_sex ? op.subject_sex.toLowerCase() : '';
-        const profileLabel = ISRID[op.subject_category ?? '']?.label ?? 'person';
-        const subject = [age, sex, profileLabel].filter(Boolean).join(' ');
-        const callMsg = `${agency} SAR callout. Locate missing ${subject}. Please respond immediately to your search manager.`;
-        const twilioBase = { accountSid: settings.twilioAccountSid, authToken: settings.twilioAuthToken, fromNumber: settings.twilioFromNumber };
-        await Promise.allSettled([
-          fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'sms', ...twilioBase, message: `${calloutMsg.slice(0, 140)} ${checkInUrl}`.slice(0, 160) }) }),
-          fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'call', ...twilioBase, message: callMsg }) }),
-        ]);
+      if (channel === 'call' || channel === 'both') {
+        sends.push(fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'call', ...twilioBase, message: callMsg, ...(toNums ? { to: toNums } : {}) }) }));
       }
+      const results = await Promise.allSettled(sends);
+      const anyOk = results.some(r => r.status === 'fulfilled');
+      if (!anyOk) throw new Error('All sends failed');
       setSent(new Date().toLocaleTimeString('en-CA'));
     } catch (e: unknown) {
       setSendErr(e instanceof Error ? e.message : 'Failed');
@@ -3682,13 +3537,15 @@ function CommunicationsTab({ op, callD4H, d4hConfigured, settings }: {
         )}
       </div>
 
-      {/* ── Second Callout ── */}
+      {/* ── SMS/Call Callout ── */}
       <div className="bg-white rounded-xl shadow p-5">
         <h3 className="font-bold text-gray-800 mb-1">Send Callout</h3>
-        <p className="text-xs text-gray-500 mb-4">Send via D4H + Twilio SMS &amp; voice. Filter members by on-scene status.</p>
+        <p className="text-xs text-gray-500 mb-4">
+          Send via Twilio to roster phones. Review and proof the message before sending — check-in link is automatically appended to SMS.
+        </p>
 
         {/* Scope filter */}
-        <div className="flex gap-2 mb-3">
+        <div className="flex gap-2 mb-3 flex-wrap">
           {(['all', 'onscene', 'notscene'] as const).map(s => (
             <button key={s} onClick={() => { setScope(s); setSelectedIds(new Set()); }}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${scope === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'}`}>
@@ -3699,7 +3556,7 @@ function CommunicationsTab({ op, callD4H, d4hConfigured, settings }: {
         </div>
 
         {/* Member list */}
-        <div className="border border-gray-200 rounded-xl overflow-hidden max-h-48 overflow-y-auto mb-3">
+        <div className="border border-gray-200 rounded-xl overflow-hidden max-h-48 overflow-y-auto mb-2">
           {loadingPeople ? (
             <div className="p-4 text-center text-gray-400 text-sm">Loading…</div>
           ) : filteredRoster.length === 0 ? (
@@ -3713,6 +3570,7 @@ function CommunicationsTab({ op, callD4H, d4hConfigured, settings }: {
                   <input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)}
                     className="w-4 h-4 accent-blue-600 shrink-0" />
                   <span className="flex-1 text-sm text-gray-800">{p.name}</span>
+                  {p.phone && <span className="text-xs text-gray-400 font-mono">{p.phone}</span>}
                   <span className={`text-xs px-1.5 py-0.5 rounded-full ${isOnScene ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                     {isOnScene ? 'On scene' : 'Not on scene'}
                   </span>
@@ -3721,34 +3579,55 @@ function CommunicationsTab({ op, callD4H, d4hConfigured, settings }: {
             })
           )}
         </div>
-
-        <div className="flex gap-2 mb-3 text-xs">
+        <div className="flex gap-2 mb-4 text-xs">
           <button onClick={selectAll} className="text-blue-600 hover:underline">Select all ({filteredRoster.length})</button>
           <span className="text-gray-300">·</span>
           <button onClick={clearAll} className="text-gray-500 hover:underline">Clear</button>
-          <span className="text-gray-500 ml-auto">{selectedIds.size} selected</span>
+          <span className="text-gray-500 ml-auto">{selectedIds.size > 0 ? `${selectedIds.size} selected` : 'All roster (if Twilio configured)'}</span>
         </div>
 
-        {/* Message */}
+        {/* Channel selector */}
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-gray-600 mb-1">Channel</label>
+          <div className="flex gap-2">
+            {([['sms', '💬 SMS'], ['call', '📞 Voice Call'], ['both', '💬+📞 Both']] as const).map(([v, label]) => (
+              <button key={v} onClick={() => setChannel(v)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${channel === v ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Message compose */}
         <div className="mb-3">
-          <label className="block text-xs font-medium text-gray-600 mb-1">Callout message (max 150 chars for SMS)</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Message body (check-in link appended automatically)</label>
           <textarea
             value={calloutMsg}
-            onChange={e => setCalloutMsg(e.target.value.slice(0, 150))}
+            onChange={e => setCalloutMsg(e.target.value.slice(0, 140))}
             rows={3}
-            className={`w-full p-2 border rounded-lg text-sm resize-none font-mono focus:outline-none focus:ring-2 ${calloutMsg.length >= 150 ? 'border-red-400 focus:ring-red-400' : 'border-gray-300 focus:ring-blue-500'}`}
+            className={`w-full p-2 border rounded-lg text-sm resize-none font-mono focus:outline-none focus:ring-2 ${calloutMsg.length >= 140 ? 'border-red-400 focus:ring-red-400' : 'border-gray-300 focus:ring-blue-500'}`}
           />
-          <div className={`text-xs mt-1 text-right ${calloutMsg.length >= 150 ? 'text-red-600' : 'text-gray-400'}`}>{calloutMsg.length}/150</div>
+          <div className={`text-xs mt-1 text-right ${calloutMsg.length >= 140 ? 'text-red-600' : 'text-gray-400'}`}>{calloutMsg.length}/140</div>
         </div>
+
+        {/* Preview */}
+        {(channel === 'sms' || channel === 'both') && (
+          <div className="mb-4 bg-gray-50 border border-gray-200 rounded-lg p-3">
+            <div className="text-xs font-semibold text-gray-500 mb-1">SMS Preview (proof before sending)</div>
+            <p className="text-xs font-mono text-gray-800 break-all">
+              {calloutMsg.trim()} {typeof window !== 'undefined' ? `${window.location.origin}/checkin/${op.id}` : `/checkin/${op.id}`}
+            </p>
+          </div>
+        )}
 
         {sendErr && <p className="text-xs text-red-600 mb-2">{sendErr}</p>}
         {sent && <p className="text-xs text-green-600 mb-2">✓ Callout sent at {sent}</p>}
 
-        <button onClick={sendCallout} disabled={sending}
+        <button onClick={sendCallout} disabled={sending || !calloutMsg.trim()}
           className="w-full bg-orange-600 text-white py-2.5 rounded-lg text-sm font-bold hover:bg-orange-700 disabled:opacity-50 transition-colors">
-          {sending ? 'Sending…' : '📣 Send D4H + Twilio Callout'}
+          {sending ? 'Sending…' : `📣 Send ${channel === 'sms' ? 'SMS' : channel === 'call' ? 'Voice Call' : 'SMS + Voice'} Callout`}
         </button>
-        <p className="text-xs text-gray-400 mt-2">Sends D4H duty callout to full roster + Twilio SMS (with check-in link) + voice to configured number.</p>
       </div>
     </div>
   );

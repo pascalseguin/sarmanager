@@ -28,6 +28,8 @@ interface DashboardData {
   smeac: string;
   ippLat: number | null;
   ippLon: number | null;
+  ippUtm: string | null;
+  ippDesc: string | null;
 }
 
 type Step = 0 | 1 | 2 | 3 | 4 | 5;
@@ -47,23 +49,28 @@ const INSPECTION_ITEMS = [
 
 // ── Departure countdown ───────────────────────────────────────────────────────
 
-function DepartureCountdown({ departureTime }: { departureTime: string | null }) {
+function DepartureCountdown({ departureTime, isVehicle }: { departureTime: string | null; isVehicle: boolean }) {
   const [label, setLabel] = useState('');
   useEffect(() => {
-    if (!departureTime) return;
-    function update() {
-      const diff = new Date(departureTime!).getTime() - Date.now();
-      if (diff <= 0) { setLabel('DEPARTED'); return; }
-      const m = Math.floor(diff / 60000);
-      const s = Math.floor((diff % 60000) / 1000);
-      setLabel(`Depart in ${m}m ${s}s`);
+    if (isVehicle && departureTime) {
+      function update() {
+        const diff = new Date(departureTime!).getTime() - Date.now();
+        if (diff <= 0) { setLabel('Vehicles DEPARTED'); return; }
+        const m = Math.floor(diff / 60000);
+        const s = Math.floor((diff % 60000) / 1000);
+        setLabel(`Vehicles depart in ${m}m ${s}s`);
+      }
+      update();
+      const id = setInterval(update, 1000);
+      return () => clearInterval(id);
+    } else {
+      setLabel('Depart ASAP');
     }
-    update();
-    const id = setInterval(update, 1000);
-    return () => clearInterval(id);
-  }, [departureTime]);
-  if (!departureTime || !label) return null;
-  const isUrgent = new Date(departureTime).getTime() - Date.now() < 10 * 60 * 1000;
+  }, [departureTime, isVehicle]);
+  if (!label) return null;
+  const isUrgent = isVehicle && departureTime
+    ? new Date(departureTime).getTime() - Date.now() < 10 * 60 * 1000
+    : true;
   return (
     <div className={`fixed top-3 right-4 px-4 py-1.5 rounded-full text-white font-bold text-sm z-50 shadow-lg ${isUrgent ? 'bg-red-600' : 'bg-blue-600'}`}>
       ⏱ {label}
@@ -304,7 +311,7 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
 
   return (
     <div className="min-h-screen bg-gray-100 pb-12">
-      {step >= 2 && <DepartureCountdown departureTime={departureTime} />}
+      {step >= 2 && <DepartureCountdown departureTime={departureTime} isVehicle={vehicleChoice === 'driver' || vehicleChoice === 'passenger'} />}
 
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
@@ -538,6 +545,24 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
                   className="inline-block bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition-colors">
                   Open CalTopo Map ↗
                 </a>
+              </div>
+            )}
+
+            {(dashboard?.ippUtm || dashboard?.caltopoUrl) && (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+                <div className="font-bold text-sm text-blue-800">📍 IPP Location</div>
+                {dashboard.ippDesc && (
+                  <div className="text-sm text-gray-700">{dashboard.ippDesc}</div>
+                )}
+                {dashboard.ippUtm && (
+                  <div className="font-mono text-sm text-gray-800">{dashboard.ippUtm}</div>
+                )}
+                {dashboard.caltopoUrl && (
+                  <a href={dashboard.caltopoUrl} target="_blank" rel="noreferrer"
+                    className="inline-block text-sm text-blue-700 font-medium hover:underline">
+                    Open CalTopo Map ↗
+                  </a>
+                )}
               </div>
             )}
 

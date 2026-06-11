@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { ISRID } from '@/lib/isrid';
+import { formatUTM } from '@/lib/utm';
 
 export async function GET(req: NextRequest) {
   const operationId = req.nextUrl.searchParams.get('operationId');
@@ -54,12 +55,18 @@ export async function GET(req: NextRequest) {
     ? new Date(new Date(op.deploy_timestamp).getTime() + 45 * 60 * 1000).toISOString()
     : null;
 
+  const ippLat: number | null = op.ipp_type === 'pls' ? op.pls_lat : op.latitude;
+  const ippLon: number | null = op.ipp_type === 'pls' ? op.pls_lon : op.longitude;
+  const ippUtm = ippLat != null && ippLon != null ? formatUTM(ippLat, ippLon) : null;
+
   return NextResponse.json({
     operation: { name: op.name, status: op.status, startedAt: op.started_at, departureTime },
     teamAssignment,
     caltopoUrl,
     smeac,
-    ippLat: op.ipp_type === 'pls' ? op.pls_lat : op.latitude,
-    ippLon: op.ipp_type === 'pls' ? op.pls_lon : op.longitude,
+    ippLat,
+    ippLon,
+    ippUtm,
+    ippDesc: ippDesc ?? null,
   });
 }

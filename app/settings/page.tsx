@@ -3,6 +3,7 @@
 import { useState, useRef } from 'react';
 import { useSettings } from '@/lib/settings-context';
 import { useQuals, invalidateQuals } from '@/lib/useQuals';
+import { useAuth } from '@/lib/auth-context';
 
 const ALL_LPB_PCTS = [25, 50, 75, 95];
 
@@ -32,6 +33,7 @@ const inputCls = 'w-full px-2.5 py-2 border border-gray-300 rounded-lg focus:out
 
 export default function SettingsPage() {
   const { settings, updateSettings } = useSettings();
+  const { authFetch } = useAuth();
   const { d4h: d4hQuals, extra: extraQuals, loading: qualsLoading } = useQuals();
   const [newQual, setNewQual] = useState('');
   const [qualSyncing, setQualSyncing] = useState(false);
@@ -75,7 +77,7 @@ export default function SettingsPage() {
     if (!settings.d4hToken || !settings.d4hTeamId) { setQualMsg('D4H token and team ID required.'); return; }
     setQualSyncing(true); setQualMsg('');
     try {
-      const res = await fetch('/api/quals', {
+      const res = await authFetch('/api/quals', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'sync', token: settings.d4hToken, teamId: Number(settings.d4hTeamId) }),
       });
@@ -94,12 +96,12 @@ export default function SettingsPage() {
   async function addExtraQual() {
     const name = newQual.trim();
     if (!name) return;
-    await fetch('/api/quals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    await authFetch('/api/quals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
     setNewQual(''); invalidateQuals();
   }
 
   async function removeExtraQual(name: string) {
-    await fetch('/api/quals', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    await authFetch('/api/quals', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
     invalidateQuals();
   }
 

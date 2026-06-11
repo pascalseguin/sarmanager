@@ -333,7 +333,7 @@ export default function PersonnelPage() {
                 {syncingQuals ? 'Syncing…' : '↻ Sync Quals'}
               </button>
             )}
-            <button onClick={() => { setImportOpen(prev => !prev); if (!importOpen && !d4hMembers.length) loadD4HMembers(); }}
+            <button onClick={() => { const opening = !importOpen; setImportOpen(opening); if (opening) loadD4HMembers(); }}
               className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50">Import from D4H</button>
             <label className="px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer">
               ↑ CSV

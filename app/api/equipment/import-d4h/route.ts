@@ -37,8 +37,13 @@ export async function POST(req: NextRequest) {
     let created = 0;
     let updated = 0;
     for (const item of items) {
+      // Skip retired items — D4H uses RETIRED status for decommissioned equipment
+      const d4hStatus: string = String(item.status ?? '').toUpperCase();
+      if (d4hStatus === 'RETIRED') continue;
+
       const d4hId = item.id ?? item.equipment_id;
-      const name  = toStr(item.title ?? item.name) ?? 'Unknown';
+      // Try title first, then ref (e.g. "SEASAR-VHF-R22"), then fall back to a placeholder
+      const name  = toStr(item.title) ?? toStr(item.ref ?? item.reference) ?? `D4H #${d4hId}`;
       const ref   = toStr(item.ref ?? item.reference);
       const serial = toStr(item.serial_number ?? item.serial);
       const brand  = toStr(item.manufacturer ?? item.brand);
@@ -46,7 +51,7 @@ export async function POST(req: NextRequest) {
       const category = toStr(item.category);
       const location = toStr(item.location?.title != null ? item.location.title : item.location);
       const container = toStr(item.location?.parent?.title ?? item.location?.parent);
-      const status = item.status === 'UNSERVICEABLE' ? 'retired' : 'available';
+      const status = d4hStatus === 'UNSERVICEABLE' ? 'retired' : 'available';
 
       const existing = db.prepare('SELECT id FROM equipment WHERE d4h_equipment_id = ?').get(d4hId);
       if (existing) {

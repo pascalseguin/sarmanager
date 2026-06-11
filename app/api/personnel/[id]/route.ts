@@ -45,5 +45,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ i
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
   db.prepare("DELETE FROM personnel WHERE id = ?").run(id);
+  // Remove D4H link so the member can be reimported cleanly
+  db.prepare("UPDATE d4h_member_map SET local_personnel_id = NULL WHERE local_personnel_id = ?").run(id);
   return NextResponse.json({ success: true });
 }
