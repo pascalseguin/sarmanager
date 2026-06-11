@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import db, { randomUUID } from '@/lib/db';
 import { requireSM, isNextResponse } from '@/lib/auth-server';
 
-const EQ_FIELDS = ['name','brand','model','serial','barcode','ref','type','category','location','container','status','deployable','notes','tag','d4h_equipment_id'];
+const EQ_FIELDS = ['name','brand','model','serial','barcode','ref','type','category','location','container','status','deployable','notes','tag','d4h_equipment_id','custom_tags'];
 
 export async function GET(req: NextRequest) {
   const result = requireSM(req);

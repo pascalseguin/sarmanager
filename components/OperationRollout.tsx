@@ -32,12 +32,15 @@ function elapsed(startedAt: string) {
   return { h, m, label: `${h}h ${m}m` };
 }
 
-function buildCalloutSMS(op: Operation): string {
-  const age = op.lost_person_age ? `${op.lost_person_age} year old` : '';
+function buildCalloutSMS(op: Operation, checkInUrl?: string): string {
+  const age = op.lost_person_age ? `${op.lost_person_age}yo` : '';
   const sex = op.subject_sex ? op.subject_sex.toLowerCase() : '';
-  const agency = op.tasking_agency ?? 'unknown';
+  const agency = op.tasking_agency ?? 'SAR';
   const profile = ISRID[op.subject_category ?? '']?.label ?? 'person';
-  const msg = `Active Callout for ${agency} to locate missing ${[age, sex, profile].filter(Boolean).join(' ')}. Report to SAR Base ASAP text 1 if responding.`;
+  const subject = [age, sex, profile].filter(Boolean).join(' ');
+  const base = `${agency} SAR callout — missing ${subject}. Check in now: `;
+  const url = checkInUrl ?? '';
+  const msg = `${base}${url}`;
   return msg.slice(0, 150);
 }
 
@@ -175,7 +178,6 @@ interface AutoState {
   caltopo: AutoStatus;
   whiteboard: AutoStatus;
   callout: AutoStatus;
-  sarcommand: AutoStatus;
   errors: Record<string, string>;
   d4hIncidentId?: string;
   caltopoMapId?: string;
@@ -184,7 +186,7 @@ interface AutoState {
   weatherSummary?: string;
 }
 
-const AUTO0: AutoState = { d4hIncident: 'idle', caltopo: 'idle', whiteboard: 'idle', callout: 'idle', sarcommand: 'idle', errors: {} };
+const AUTO0: AutoState = { d4hIncident: 'idle', caltopo: 'idle', whiteboard: 'idle', callout: 'idle', errors: {} };
 
 function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Operation) => void }) {
   const { settings } = useSettings();
@@ -214,8 +216,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
     d4hIncident: alreadyCreated ? 'done' : 'idle',
   });
   const [firing, setFiring] = useState(false);
-  const [sarLaunched, setSarLaunched] = useState(false);
-  const [activeTab, setActiveTab] = useState<'board' | 'teams' | 'rollout' | 'weather' | 'brief' | 'smeac' | 'sarab' | 'news' | 'd4hupdate' | 'secondcallout' | 'equipment'>('board');
+  const [activeTab, setActiveTab] = useState<'board' | 'comms' | 'personnel' | 'imt' | 'opdetails' | 'equipment' | 'operation'>('board');
 
   const setStatus = useCallback((key: keyof Omit<AutoState, 'errors'>, status: AutoStatus, extra?: Partial<AutoState>) => {
     setAuto(prev => ({ ...prev, [key]: status, ...extra }));
@@ -281,35 +282,43 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         ? `https://caltopo.com/m/${op.caltopo_map_id}`
         : (auto.caltopoUrl ?? '');
 
-      // Create the incident
+      // Create the incident or exercise
       const d = new Date();
       const dateStr = d.toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' })
         .toUpperCase().replace(/ /g, '-').replace(',', '');
       const tempTitle = `${dateStr} PENDING`;
+      const isExercise = op.d4h_activity_type === 'exercise';
 
-      const { incidentId } = await callD4H('createIncident', {
+      const createAction = isExercise ? 'createExercise' : 'createIncident';
+      const createResult = await callD4H(createAction, {
         title: tempTitle,
         description: buildD4HDescription(op),
-        latitude: ippLat,
-        longitude: ippLon,
       });
 
-      // Rename with actual D4H ID (non-fatal — incident is already created)
-      const finalTitle = `${dateStr} #${incidentId}`;
+      const activityId: number = isExercise
+        ? (createResult.exerciseId ?? createResult.exercise?.id)
+        : (createResult.incidentId ?? createResult.incident?.id);
+
+      if (!activityId) throw new Error(`D4H ${createAction} succeeded but returned no ID — response: ${JSON.stringify(createResult).slice(0, 200)}`);
+
+      // Rename with actual D4H ID (non-fatal)
+      const finalTitle = `${dateStr} #${activityId}`;
       try {
-        await callD4H('updateIncident', { incidentId, title: finalTitle });
+        const updateAction = isExercise ? 'updateExercise' : 'updateIncident';
+        const idKey = isExercise ? 'exerciseId' : 'incidentId';
+        await callD4H(updateAction, { [idKey]: activityId, title: finalTitle });
       } catch {
-        // D4H v3 incident update may not be available; title stays as PENDING — not critical
+        // Title rename is non-critical
       }
 
       // Save to operation
-      const updated = await apiPatch(op.id, {
-        d4h_incident_id: String(incidentId),
-        weather_snapshot: weatherSummary,
-      });
+      const patch = isExercise
+        ? { d4h_exercise_id: String(activityId), weather_snapshot: weatherSummary }
+        : { d4h_incident_id: String(activityId), weather_snapshot: weatherSummary };
+      const updated = await apiPatch(op.id, patch);
       if (updated) onUpdated(updated);
 
-      setStatus('d4hIncident', 'done', { d4hIncidentId: String(incidentId), weatherSummary });
+      setStatus('d4hIncident', 'done', { d4hIncidentId: String(activityId), weatherSummary });
     } catch (e: unknown) {
       setError('d4hIncident', e instanceof Error ? e.message : 'D4H error');
     }
@@ -325,16 +334,33 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       const profile = ISRID[op.subject_category ?? ''] ?? ISRID.hiker;
       const d4hId   = op.d4h_incident_id ?? op.d4h_exercise_id;
 
-      // Map title: "Location-Date-D4H{id}" matching Electron format
       const albertaDate = new Date().toLocaleDateString('en-CA', {
         timeZone: 'America/Edmonton', year: 'numeric', month: '2-digit', day: '2-digit',
       });
+
+      // Reverse geocode the IPP to get the municipality/neighbourhood
+      let geoLocation = '';
+      try {
+        const rgParams = new URLSearchParams({ lat: String(ippLat), lon: String(ippLon) });
+        if (settings.hereApiKey?.trim()) rgParams.set('key', settings.hereApiKey.trim());
+        const rgRes = await fetch(`/api/geocode?${rgParams}`);
+        if (rgRes.ok) geoLocation = ((await rgRes.json()).municipality ?? '').trim();
+      } catch { /* non-fatal */ }
+
       const ippDesc = (op.ipp_type === 'pls' ? op.pls_location : op.last_seen_location) ?? '';
-      const locationSlug = ippDesc.trim().split(/[\s,\/]+/).slice(0, 3).join('-') || null;
-      const d4hSuffix = `D4H${d4hId ?? '0000000'}`;
-      const mapTitle = locationSlug
-        ? `${locationSlug}-${albertaDate}-${d4hSuffix}`
-        : `${op.name}-${d4hSuffix}`;
+      const rawLocation = geoLocation || ippDesc.split(',')[0]?.trim() || 'Location';
+      const locationSlug = rawLocation.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '-');
+
+      // Apply the op-name template so map title and operation name stay consistent
+      const template = settings.opNameTemplate || '{location}-{date}-{d4h_id}';
+      const mapTitle = template
+        .replace(/\{location\}/g, locationSlug)
+        .replace(/\{date\}/g, albertaDate)
+        .replace(/\{d4h_id\}/g, d4hId ?? '0000000')
+        .replace(/\{subject\}/g, op.lost_person_name ?? '')
+        .replace(/[-–]{2,}/g, '-')
+        .replace(/^[-–\s]+|[-–\s]+$/g, '')
+        .trim() || `${locationSlug}-${albertaDate}`;
 
       // Folder IDs from template (for routing features to organized layers)
       // Convention: "00 - Critical Incident Info" for markers, "02 - LPB" for rings
@@ -404,9 +430,10 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         }
       }
 
-      // ISRID probability rings — 50 / 75 / 95% only (matches Electron standard)
-      const RING_COLORS_CT: Record<number, string> = { 50: '#FF3300', 75: '#FF8800', 95: '#FFCC00' };
-      for (const { pct, km } of profile.distances.filter(d => [50, 75, 95].includes(d.pct))) {
+      // ISRID probability rings — driven by settings.lpbRingPcts
+      const RING_COLORS_CT: Record<number, string> = { 25: '#FF0000', 50: '#FF3300', 75: '#FF8800', 95: '#FFCC00' };
+      const ringPcts = settings.lpbRingPcts?.length ? settings.lpbRingPcts : [50, 75, 95];
+      for (const { pct, km } of profile.distances.filter(d => ringPcts.includes(d.pct))) {
         const ring = circlePolygon(ippLat, ippLon, km);
         ring.properties = {
           title: `${pct}% Probability (${km}km) – ${profile.label}`,
@@ -424,7 +451,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       const localFeatures = buildLocalCaltopoFeatures(op, ippLat, ippLon, profile);
       const caltopoFeatures = JSON.stringify({ type: 'FeatureCollection', features: localFeatures });
 
-      const updated = await apiPatch(op.id, { caltopo_map_id: mapId, caltopo_map_url: url, caltopo_features: caltopoFeatures });
+      const updated = await apiPatch(op.id, { name: mapTitle, caltopo_map_id: mapId, caltopo_map_url: url, caltopo_features: caltopoFeatures });
       if (updated) onUpdated(updated);
 
       setStatus('caltopo', 'done', { caltopoMapId: mapId, caltopoUrl: url });
@@ -454,8 +481,9 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         properties: { title: `${secLabel} – ${subjectName}`, color: op.ipp_type === 'lkp' ? '#0088FF' : '#FF00FF', class: 'Marker' },
       });
     }
-    const RING_COLORS_CT: Record<number, string> = { 50: '#FF3300', 75: '#FF8800', 95: '#FFCC00' };
-    for (const { pct, km } of profile.distances.filter((d: { pct: number }) => [50, 75, 95].includes(d.pct))) {
+    const RING_COLORS_CT: Record<number, string> = { 25: '#FF0000', 50: '#FF3300', 75: '#FF8800', 95: '#FFCC00' };
+    const ringPcts = settings.lpbRingPcts?.length ? settings.lpbRingPcts : [50, 75, 95];
+    for (const { pct, km } of profile.distances.filter((d: { pct: number }) => ringPcts.includes(d.pct))) {
       const ring = circlePolygon(ippLat, ippLon, km);
       ring.properties = {
         title: `${pct}% Probability (${km}km) – ${profile.label}`,
@@ -473,6 +501,9 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
     setStatus('whiteboard', 'running');
     try {
       const mapUrl = op.caltopo_map_url ?? auto.caltopoUrl ?? (op.caltopo_map_id ? `https://caltopo.com/m/${op.caltopo_map_id}` : '');
+      const portalUrl = typeof window !== 'undefined'
+        ? `${window.location.origin}/checkin/${op.id}`
+        : `/checkin/${op.id}`;
       await callD4H('postWhiteboard', {
         title: `🔴 Active Search — ${op.name}`,
         content: [
@@ -480,6 +511,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
           op.tasking_agency ? `Tasking: ${op.tasking_agency}` : '',
           op.oic_name ? `OIC: ${op.oic_name}` : '',
           mapUrl ? `CalTopo: ${mapUrl}` : '',
+          `Check-In Portal: ${portalUrl}`,
           `Started: ${new Date(op.started_at).toLocaleString()}`,
         ].filter(Boolean).join('\n'),
         pinned: true,
@@ -493,30 +525,46 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
   async function runCallout() {
     setStatus('callout', 'running');
     try {
-      const msg = buildCalloutSMS(op);
-      // Use the in-component auto state for the incident ID — it's set by runD4HIncident
+      const checkInUrl = typeof window !== 'undefined' ? `${window.location.origin}/checkin/${op.id}` : `/checkin/${op.id}`;
+      const smsMsg  = buildCalloutSMS(op, checkInUrl);
+
+      // Voice message — no URL (not readable aloud)
+      const agency  = op.tasking_agency ?? 'SAR';
+      const age     = op.lost_person_age ? `${op.lost_person_age}yo` : '';
+      const sex     = op.subject_sex ? op.subject_sex.toLowerCase() : '';
+      const profile = ISRID[op.subject_category ?? '']?.label ?? 'person';
+      const subject = [age, sex, profile].filter(Boolean).join(' ');
+      const callMsg = `${agency} SAR callout. Locate missing ${subject}. Please respond immediately to your search manager.`;
+
+      // D4H duty callout (records the callout in D4H)
       const incidentId = auto.d4hIncidentId ?? op.d4h_incident_id;
-      const { calloutId } = await callD4H('sendCallout', { message: msg, incidentId });
-      const updated = await apiPatch(op.id, { d4h_callout_id: String(calloutId) });
-      if (updated) onUpdated(updated);
-      setStatus('callout', 'done', { calloutId: String(calloutId) });
+      const d4hResult  = await callD4H('sendCallout', { message: smsMsg, incidentId }).catch(() => ({ calloutId: null }));
+      if (d4hResult.calloutId) {
+        const updated = await apiPatch(op.id, { d4h_callout_id: String(d4hResult.calloutId) });
+        if (updated) onUpdated(updated);
+      }
+
+      // Twilio SMS + voice call in parallel (if configured)
+      if (settings.twilioAccountSid && settings.twilioAuthToken && settings.twilioFromNumber) {
+        const twilioBase = {
+          accountSid: settings.twilioAccountSid,
+          authToken: settings.twilioAuthToken,
+          fromNumber: settings.twilioFromNumber,
+        };
+        await Promise.allSettled([
+          fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'sms',  ...twilioBase, message: smsMsg }) }),
+          fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'call', ...twilioBase, message: callMsg }) }),
+        ]);
+      }
+
+      setStatus('callout', 'done', { calloutId: d4hResult.calloutId ? String(d4hResult.calloutId) : undefined });
     } catch (e: unknown) {
       setError('callout', e instanceof Error ? e.message : 'Callout error');
     }
   }
 
-  async function runSARCommand() {
-    setStatus('sarcommand', 'running');
-    try {
-      const res = await fetch('/api/sarcommand', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Failed to launch SAR Command Assist');
-      setSarLaunched(true);
-      // Stays 'running' (amber) until user clicks Mark Done below
-    } catch (e: unknown) {
-      setError('sarcommand', e instanceof Error ? e.message : 'Launch error');
-    }
-  }
 
   async function oneClickRollout() {
     setFiring(true);
@@ -526,15 +574,10 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
     await Promise.allSettled([
       auto.whiteboard  !== 'skipped' ? runWhiteboard()  : Promise.resolve(),
       auto.callout     !== 'skipped' ? runCallout()     : Promise.resolve(),
-      auto.sarcommand  !== 'skipped' ? runSARCommand()  : Promise.resolve(),
     ]);
     setFiring(false);
   }
 
-  const autoKeys = ['d4hIncident', 'caltopo', 'whiteboard', 'callout', 'sarcommand'] as const;
-  const doneCount = autoKeys.filter(k => auto[k] === 'done' || auto[k] === 'skipped' || (k === 'sarcommand' && sarLaunched)).length;
-  function skipStep(key: typeof autoKeys[number]) { setAuto(prev => ({ ...prev, [key]: 'skipped' })); }
-  function unskipStep(key: typeof autoKeys[number]) { setAuto(prev => ({ ...prev, [key]: 'idle' })); }
   const caltopoUrl = op.caltopo_map_url ?? auto.caltopoUrl ?? (op.caltopo_map_id ? `https://caltopo.com/m/${op.caltopo_map_id}` : '');
   const { h, label: elapsedLabel } = elapsed(op.started_at);
   const profile = ISRID[op.subject_category ?? ''] ?? ISRID.hiker;
@@ -543,186 +586,41 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
   const hasCoords = ippLat !== 0 && ippLon !== 0;
 
   const tabs = [
-    { id: 'board',        label: '📋 Board' },
-    { id: 'teams',        label: '👥 Teams' },
-    { id: 'rollout',      label: 'Rollout' },
-    { id: 'weather',      label: 'Weather' },
-    { id: 'brief',        label: 'Lost Person Brief' },
-    { id: 'smeac',        label: 'SMEAC Briefing' },
-    { id: 'sarab',        label: 'SAR AB Response' },
-    { id: 'news',         label: 'Local News' },
-    { id: 'd4hupdate',    label: 'Push Update D4H' },
-    { id: 'secondcallout',label: 'Second Callout' },
-    { id: 'equipment',    label: 'Equipment' },
+    { id: 'board',      label: 'Board' },
+    { id: 'comms',      label: 'Communications' },
+    { id: 'personnel',  label: 'Personnel Management' },
+    { id: 'imt',        label: 'IMT Checklists' },
+    { id: 'opdetails',  label: 'Operation Details' },
+    { id: 'equipment',  label: 'Equipment' },
+    { id: 'operation',  label: 'Edit Operation' },
   ] as const;
 
   return (
     <div>
-      {/* ── Decision banner (shown until deploy is confirmed) ── */}
-      {decisionBanner === 'decide' && (
-        <div className="bg-white rounded-xl shadow border-2 border-blue-400 p-4 mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-gray-800">Decision to Deploy</h2>
-            <button onClick={() => setDecisionBanner('hidden')} className="text-xs text-gray-400 hover:text-gray-600">Dismiss ✕</button>
+      {/* Slim op header */}
+      <div className="bg-white rounded-xl shadow px-4 py-3 mb-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className={`font-bold text-base truncate ${op.deploy_decision === 'yes' ? 'text-green-700' : 'text-gray-800'}`}>
+            {op.deploy_decision === 'yes' ? 'DEPLOYED' : 'ACTIVE'} — {op.name}
           </div>
-          <p className="text-sm text-gray-500 mb-4 leading-relaxed">
-            Tasking from <strong>{op.tasking_agency ?? '—'}</strong>{op.oic_name ? ` via ${op.oic_name}` : ''}.{' '}
-            Subject: <strong>{op.lost_person_name ?? 'Unknown'}</strong>{op.lost_person_age ? `, ${op.lost_person_age}y` : ''}.
-            {op.safety_concerns && <span className="text-red-600"> ⚠️ {op.safety_concerns.slice(0, 80)}</span>}
-          </p>
-          <div className="flex gap-3">
-            <button onClick={() => setDecision('yes')}
-              className="flex-1 bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 transition-colors">
-              ✅ DEPLOY
-            </button>
-            <button onClick={() => setDecision('no')}
-              className="flex-1 border-2 border-yellow-500 text-yellow-600 py-3 rounded-xl font-bold hover:bg-yellow-50 transition-colors">
-              ⏸ DISCUSS FIRST
-            </button>
-          </div>
-        </div>
-      )}
-
-      {decisionBanner === 'discuss' && (
-        <div className="bg-white rounded-xl shadow border-2 border-yellow-400 p-4 mb-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-bold text-yellow-600">SM Discussion</h2>
-            <div className="flex gap-2">
-              <button onClick={() => setDecision('yes')}
-                className="bg-green-600 text-white px-3 py-1.5 rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors">
-                → Deploy
-              </button>
-              <button onClick={() => setDecisionBanner('hidden')} className="text-xs text-gray-400 hover:text-gray-600">Dismiss ✕</button>
-            </div>
-          </div>
-          <input value={discussWhy} onChange={e => setDiscussWhy(e.target.value)}
-            placeholder="Reason for discussion (resources, weather, jurisdiction…)"
-            className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 mb-3" />
-          <div className="bg-gray-50 rounded-lg p-3 font-mono text-xs whitespace-pre-wrap leading-relaxed mb-2">
-            {[
-              `📋 INCIDENT — ${op.tasking_agency ?? 'Unknown Agency'} — ${new Date().toLocaleString()}`,
-              `Subject: ${op.lost_person_name ?? '—'}, ${op.lost_person_age ?? '—'}y, ${op.subject_sex ?? '—'}`,
-              `Location: ${op.last_seen_location ?? op.pls_location ?? '—'}`,
-              `Circumstance: ${op.subject_circumstance?.slice(0, 200) ?? '—'}`,
-              `Safety: ${op.safety_concerns || 'None noted'}`,
-              discussWhy ? `Why discussing: ${discussWhy}` : '',
-            ].filter(Boolean).join('\n')}
-          </div>
-          <button
-            onClick={() => {
-              navigator.clipboard.writeText([
-                `📋 INCIDENT — ${op.tasking_agency ?? 'Unknown Agency'} — ${new Date().toLocaleString()}`,
-                `Subject: ${op.lost_person_name ?? '—'}, ${op.lost_person_age ?? '—'}y, ${op.subject_sex ?? '—'}`,
-                `Location: ${op.last_seen_location ?? op.pls_location ?? '—'}`,
-                `Safety: ${op.safety_concerns || 'None noted'}`,
-                discussWhy ? `Why discussing: ${discussWhy}` : '',
-              ].filter(Boolean).join('\n'));
-              setDiscussCopied(true); setTimeout(() => setDiscussCopied(false), 2500);
-            }}
-            className="bg-blue-600 text-white px-4 py-1.5 rounded text-sm font-semibold hover:bg-blue-700 transition-colors">
-            {discussCopied ? '✓ Copied' : 'Copy Message'}
-          </button>
-        </div>
-      )}
-
-      {/* Operation banner */}
-      <div className={`bg-white rounded-xl shadow p-4 mb-4 border-l-4 ${op.deploy_decision === 'yes' ? 'border-green-500' : 'border-blue-400'}`}>
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div>
-            <div className={`font-bold text-lg ${op.deploy_decision === 'yes' ? 'text-green-700' : 'text-gray-700'}`}>
-              {op.deploy_decision === 'yes' ? 'DEPLOYED' : 'ACTIVE'} — {op.name}
-            </div>
-            {op.deploy_decision === 'yes' && op.deploy_timestamp && (
-              <div className="text-sm text-gray-600 mt-0.5">Deployed at {fmt(op.deploy_timestamp)} · Elapsed: <span className={h > 6 ? 'text-red-600 font-bold' : 'font-semibold text-gray-800'}>{elapsedLabel}</span></div>
-            )}
-            {!op.deploy_decision && (
-              <div className="text-sm text-gray-500 mt-0.5">Elapsed: <span className="font-semibold text-gray-800">{elapsedLabel}</span></div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            Elapsed: <span className={`font-semibold ${h > 6 ? 'text-red-600' : 'text-gray-800'}`}>{elapsedLabel}</span>
+            {(op.d4h_incident_id ?? op.d4h_exercise_id) && (
+              <span className="ml-3 text-gray-400">D4H #{op.d4h_incident_id ?? op.d4h_exercise_id}</span>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-700 font-medium">{doneCount}/{autoKeys.length} complete</span>
-            <button onClick={oneClickRollout} disabled={firing}
-              className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700 disabled:opacity-50 transition-colors">
-              {firing ? 'Firing…' : doneCount === autoKeys.length ? '↺ Re-fire' : '🚀 One-Click Rollout'}
-            </button>
-            <Link href={`/operations/${op.id}/close`}
-              className="px-4 py-2 rounded-lg text-sm font-bold border border-red-300 text-red-600 hover:bg-red-50 transition-colors">
-              Close Op
-            </Link>
-          </div>
         </div>
-      </div>
-
-      {/* Automation status */}
-      <div className="bg-white rounded-xl shadow p-4 mb-4">
-        <div className="flex flex-wrap gap-2 mb-3">
-          {(([
-            { key: 'd4hIncident', label: op.d4h_activity_type === 'exercise' ? 'D4H Exercise' : 'D4H Incident', onRun: runD4HIncident,
-              extra: (op.d4h_incident_id ?? op.d4h_exercise_id ?? auto.d4hIncidentId) ? `#${op.d4h_incident_id ?? op.d4h_exercise_id ?? auto.d4hIncidentId}` : undefined },
-            { key: 'caltopo',    label: 'CalTopo Map',        onRun: runCaltopo,     link: caltopoUrl || undefined },
-            { key: 'whiteboard', label: 'D4H Whiteboard',     onRun: runWhiteboard },
-            { key: 'callout',    label: 'Callout SMS',        onRun: runCallout,     extra: auto.calloutId ? `ID ${auto.calloutId}` : undefined },
-            { key: 'sarcommand', label: 'SAR Command Assist', onRun: runSARCommand },
-          ]) as { key: typeof autoKeys[number]; label: string; onRun: () => void; link?: string; extra?: string }[])
-            .map(({ key, label, onRun, link, extra }) => (
-            <AutoBadge key={key} label={label} status={auto[key] as AutoStatus}
-              error={auto.errors[key]} link={link} extra={extra}
-              onRun={onRun}
-              onSkip={() => skipStep(key)}
-              onUnskip={() => unskipStep(key)} />
-          ))}
-        </div>
-
-        {/* SMS preview */}
-        <div className="bg-gray-50 rounded-lg p-3 mt-3">
-          <div className="text-xs text-gray-600 font-medium mb-1">Callout SMS preview ({buildCalloutSMS(op).length}/150 chars)</div>
-          <div className="text-sm font-mono text-gray-800 leading-relaxed">{buildCalloutSMS(op)}</div>
-        </div>
-
-        {/* SAR Command Assist reference panel — shown after launch */}
-        {sarLaunched && auto.sarcommand !== 'done' && auto.sarcommand !== 'skipped' && (
-          <div className="mt-3 border border-amber-300 bg-amber-50 rounded-lg p-4">
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1">
-                <div className="font-semibold text-amber-900 text-sm mb-2">SAR Command Assist launched — enter this manually:</div>
-                <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
-                  {[
-                    ['Task name', op.name],
-                    ['Subject', op.lost_person_name],
-                    ['Age / Sex', [op.lost_person_age ? `${op.lost_person_age}y` : null, op.subject_sex].filter(Boolean).join(' / ') || null],
-                    ['Clothing', op.subject_clothing],
-                    ['Profile', ISRID[op.subject_category ?? '']?.label],
-                    ['Agency', op.tasking_agency],
-                    ['OIC', op.oic_name],
-                    ['PLS', op.pls_location],
-                    ['PLS UTM', op.pls_lat ? formatUTM(op.pls_lat, op.pls_lon!) : null],
-                    ['LKP', op.last_seen_location],
-                    ['LKP UTM', op.latitude ? formatUTM(op.latitude, op.longitude!) : null],
-                    ['Circumstances', op.subject_circumstance?.slice(0, 120)],
-                    ['Safety', op.safety_concerns],
-                  ].filter(([, v]) => v).map(([k, v]) => (
-                    <div key={String(k)} className="contents">
-                      <span className="text-amber-700 font-medium">{k}</span>
-                      <span className="text-amber-900">{v}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <button
-                onClick={() => setStatus('sarcommand', 'done')}
-                className="shrink-0 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors">
-                Mark Done
-              </button>
-            </div>
-          </div>
-        )}
+        <Link href={`/operations/${op.id}/close`}
+          className="shrink-0 px-4 py-2 rounded-lg text-sm font-bold border border-red-300 text-red-600 hover:bg-red-50 transition-colors">
+          Close Op
+        </Link>
       </div>
 
       {/* Tab nav */}
-      <div className="flex gap-1 bg-white rounded-xl shadow p-1 mb-4 overflow-x-auto">
+      <div className="sar-tabs" style={{ marginBottom: 16, overflowX: 'auto' }}>
         {tabs.map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)}
-            className={`px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${activeTab === t.id ? 'bg-blue-600 text-white' : 'text-gray-800 hover:bg-gray-100'}`}>
+            className={`sar-tab ${activeTab === t.id ? 'active' : ''}`}>
             {t.label}
           </button>
         ))}
@@ -730,94 +628,40 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
 
       {/* ── BOARD tab ── */}
       {activeTab === 'board' && (
-        <BoardTab op={op} settings={settings} />
-      )}
-
-      {/* ── TEAMS tab ── */}
-      {activeTab === 'teams' && (
-        <TeamsTab op={op} />
-      )}
-
-      {/* ── ROLLOUT tab ── */}
-      {activeTab === 'rollout' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <RoleTrack title="Incident Commander" color="#3b82f6" tasks={[
-            'Move to Fire Hall / arrange driver from IMT',
-            'Inform SAR AB',
-            'Inform Local Liaison Officers',
-            'Brief Ops & Planning',
-            'Interview family',
-            'Create IAP',
-          ]} opId={op.id} />
-          <RoleTrack title="Operations Chief" color="#f59e0b" tasks={[
-            'Move to Fire Hall',
-            'Manage load out',
-            'Unforward Ops Cell',
-            'Establish comms with SM',
-            'Monitor D4H — create teams',
-            'Conduct safety brief',
-            'Deploy',
-          ]} opId={op.id} />
-          <RoleTrack title="Planning Chief" color="#10b981" tasks={[
-            'Establish virtual hub',
-            'Send D4H callout (Twilio) ✓ AUTO',
-            'Create CalTopo map + ISRID rings ✓ AUTO',
-            'Push to SAR Command Assist ✓ AUTO',
-            'Post to D4H whiteboard ✓ AUTO',
-            'Start log',
-            'Move to CP once established',
-          ]} opId={op.id} />
-          <div className="bg-white rounded-xl shadow p-4 border-t-4" style={{ borderTopColor: '#8b5cf6' }}>
-            <div className="font-bold text-base mb-2" style={{ color: '#8b5cf6' }}>Searchers</div>
-            <div className="text-sm text-gray-700 mb-3 leading-relaxed">Reply to D4H callout:</div>
-            <div className="bg-gray-50 rounded-lg p-3 text-sm space-y-1.5 text-gray-800">
-              <div>Reply <strong>1</strong> → Attending</div>
-              <div>Other reply → Pending</div>
-              <div>No reply → Not attending</div>
-            </div>
-            <div className="text-sm text-gray-700 mt-3 leading-relaxed">
-              State destination:<br />
-              <strong>Firehall with ETA</strong> or <strong>ICP with ETA</strong>
-            </div>
-            {op.d4h_callout_id && (
-              <div className="text-sm text-green-700 mt-2 font-medium">Callout sent · ID {op.d4h_callout_id}</div>
-            )}
-          </div>
+        <div className="space-y-4">
+          {hasCoords && <WeatherPanel lat={ippLat} lon={ippLon} hasCoords={hasCoords} compact />}
+          <BoardTab op={op} settings={settings} />
         </div>
       )}
 
-      {/* ── WEATHER tab ── */}
-      {activeTab === 'weather' && (
-        <WeatherPanel lat={ippLat} lon={ippLon} hasCoords={hasCoords} />
+      {/* ── COMMUNICATIONS tab ── */}
+      {activeTab === 'comms' && (
+        <CommunicationsTab op={op} callD4H={callD4H} d4hConfigured={Boolean(d4hToken)} settings={settings} />
       )}
 
-      {/* ── LOST PERSON BRIEF tab ── */}
-      {activeTab === 'brief' && (
-        <LPBPanel op={op} onUpdated={onUpdated} elapsedLabel={elapsedLabel} />
+      {/* ── PERSONNEL MANAGEMENT tab ── */}
+      {activeTab === 'personnel' && (
+        <PersonnelManagementTab op={op} onUpdated={onUpdated} />
       )}
 
-      {/* ── SMEAC tab ── */}
-      {activeTab === 'smeac' && <SMEACPanel op={op} elapsedLabel={elapsedLabel} caltopoUrl={caltopoUrl} />}
-
-      {/* ── SAR AB tab ── */}
-      {activeTab === 'sarab' && <SARABPanel lat={ippLat} lon={ippLon} hasCoords={hasCoords} />}
-
-      {/* ── LOCAL NEWS tab ── */}
-      {activeTab === 'news' && <LocalNewsPanel op={op} />}
-
-      {/* ── PUSH UPDATE D4H tab ── */}
-      {activeTab === 'd4hupdate' && (
-        <D4HUpdatePanel op={op} callD4H={callD4H} d4hConfigured={Boolean(d4hToken)} />
+      {/* ── IMT CHECKLISTS tab ── */}
+      {activeTab === 'imt' && (
+        <IMTChecklistsTab op={op} settings={settings} />
       )}
 
-      {/* ── SECOND CALLOUT tab ── */}
-      {activeTab === 'secondcallout' && (
-        <SecondCalloutPanel op={op} callD4H={callD4H} d4hConfigured={Boolean(d4hToken)} defaultSMS={buildCalloutSMS(op)} />
+      {/* ── OPERATION DETAILS tab ── */}
+      {activeTab === 'opdetails' && (
+        <OperationDetailsTab op={op} onUpdated={onUpdated} elapsedLabel={elapsedLabel} caltopoUrl={caltopoUrl} ippLat={ippLat} ippLon={ippLon} hasCoords={hasCoords} />
       )}
 
       {/* ── EQUIPMENT tab ── */}
       {activeTab === 'equipment' && (
         <OperationEquipmentPanel op={op} callD4H={callD4H} d4hConfigured={Boolean(d4hToken)} />
+      )}
+
+      {/* ── OPERATION EDIT tab ── */}
+      {activeTab === 'operation' && (
+        <OperationEditTab op={op} onUpdated={onUpdated} />
       )}
     </div>
   );
@@ -909,7 +753,7 @@ function RoleTrack({ title, color, tasks, opId }: { title: string; color: string
 
 // ── Weather panel ─────────────────────────────────────────────────────────────
 
-function WeatherPanel({ lat, lon, hasCoords }: { lat: number; lon: number; hasCoords: boolean }) {
+function WeatherPanel({ lat, lon, hasCoords, compact }: { lat: number; lon: number; hasCoords: boolean; compact?: boolean }) {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -954,6 +798,21 @@ function WeatherPanel({ lat, lon, hasCoords }: { lat: number; lon: number; hasCo
   const c = data.conditions as Record<string, unknown>;
   const forecast = data.forecast as { period: string; tempC: number; precipMm: number; windSpeedKmh: number; description: string }[];
   const alerts = data.alerts as { id: string; severity: string; title: string; issuedAt: string; description: string }[];
+
+  if (compact) {
+    return (
+      <div className="bg-white rounded-xl shadow px-4 py-2.5 flex items-center gap-4 flex-wrap text-sm">
+        {alerts.length > 0 && (
+          <span className="text-red-600 font-bold text-xs">{alerts[0].severity.toUpperCase()}: {alerts[0].title.slice(0, 60)}</span>
+        )}
+        <span className="font-bold text-gray-800">{c.description as string}</span>
+        {c.tempC != null && <span className="text-gray-700">{(c.tempC as number).toFixed(1)}°C{c.feelsLikeC != null ? ` (feels ${(c.feelsLikeC as number).toFixed(1)}°)` : ''}</span>}
+        {c.windSpeedKmh != null && <span className="text-gray-600">Wind {(c.windDirection as string) ?? ''} {c.windSpeedKmh as number} km/h{c.windGustKmh ? ` G${c.windGustKmh as number}` : ''}</span>}
+        {c.visibilityKm != null && <span className="text-gray-500">Vis {(c.visibilityKm as number).toFixed(1)} km</span>}
+        <button onClick={load} disabled={loading} className="ml-auto text-xs text-blue-500 hover:underline shrink-0">{loading ? '…' : '↺'}</button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -2349,12 +2208,11 @@ interface TaskWithAssignments {
   assignments: { id: string; personnel_id: string; is_team_leader: number; name: string }[];
 }
 
-// Radio check-in status (ICS standard: green <45m, yellow 45-60m, red >60m)
-function radioStatus(lastHeardAt?: string): { color: string; mins: number } {
+function radioStatus(lastHeardAt?: string, yellowMins = 45, redMins = 60): { color: string; mins: number } {
   if (!lastHeardAt) return { color: 'bg-gray-300', mins: 999 };
   const mins = Math.max(0, Math.round((Date.now() - new Date(lastHeardAt).getTime()) / 60000));
-  if (mins > 60) return { color: 'bg-red-500', mins };
-  if (mins > 45) return { color: 'bg-yellow-400', mins };
+  if (mins > redMins)    return { color: 'bg-red-500',    mins };
+  if (mins > yellowMins) return { color: 'bg-yellow-400', mins };
   return { color: 'bg-green-400', mins };
 }
 
@@ -2367,12 +2225,18 @@ const SM_CHECKLIST = [
   { key: 'demob',           label: 'Demob complete' },
 ];
 
-function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof useSettings>['settings'] }) {
+function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof useSettings>['settings']; }) {
+  const yellowMins = settings.radioCheckYellowMins ?? 45;
+  const redMins    = settings.radioCheckRedMins    ?? 60;
+  const ippLat = (op.ipp_type === 'pls' ? op.pls_lat : op.latitude) ?? 0;
+  const ippLon = (op.ipp_type === 'pls' ? op.pls_lon : op.longitude) ?? 0;
+  const profile = ISRID[op.subject_category ?? ''] ?? ISRID.hiker;
   const [checkins, setCheckins] = useState<CheckIn[]>([]);
   const [tasks, setTasks]       = useState<TaskWithAssignments[]>([]);
   const [features, setFeatures] = useState<unknown[]>([]);
   const [loadingMap, setLoadingMap] = useState(false);
   const [mapError, setMapError]     = useState('');
+  const [lastMapRefresh, setLastMapRefresh] = useState<Date | null>(null);
   // SM Checklist + Planning Notes stored in localStorage per operation
   const [checklist, setChecklist] = useState<Record<string, boolean>>({});
   const [planningNotes, setPlanningNotes] = useState('');
@@ -2439,6 +2303,7 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Failed to load map');
       setFeatures(data.features ?? []);
+      setLastMapRefresh(new Date());
     } catch (e: unknown) {
       setMapError(e instanceof Error ? e.message : 'Map load failed');
     } finally {
@@ -2462,6 +2327,13 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
     const t = setInterval(() => setCheckins(prev => [...prev]), 60000); // force re-render for timer
     return () => clearInterval(t);
   }, []);
+
+  // Poll CalTopo every 30 s for live map updates (teams, waypoints, etc.)
+  useEffect(() => {
+    if (!op.caltopo_map_id) return;
+    const t = setInterval(() => loadMap(), 30000);
+    return () => clearInterval(t);
+  }, [op.caltopo_map_id]);
 
   const assignedNames = new Set(tasks.flatMap(t => t.assignments.map(a => a.name.toLowerCase())));
   const fieldMembers  = checkins.filter(c => c.fit_for_field);
@@ -2495,7 +2367,7 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
                     t.status === 'returned' ? 'bg-gray-100 text-gray-600' :
                     'bg-yellow-100 text-yellow-700'}`}>{t.status}</span>
                 </div>
-                {members.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} />)}
+                {members.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} yellowMins={yellowMins} redMins={redMins} />)}
               </div>
             );
           })}
@@ -2503,13 +2375,13 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
             <>
               <div className="px-3 py-1 text-xs font-bold text-gray-400 uppercase bg-gray-50 border-b border-t">Unassigned</div>
               {fieldMembers.filter(c => !assignedNames.has(c.searcher_name.toLowerCase()))
-                .map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} />)}
+                .map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} yellowMins={yellowMins} redMins={redMins} />)}
             </>
           )}
           {baseMembers.length > 0 && (
             <>
               <div className="px-3 py-1 text-xs font-bold text-gray-400 uppercase bg-gray-50 border-b border-t">Base ({baseMembers.length})</div>
-              {baseMembers.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} isBase />)}
+              {baseMembers.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} isBase yellowMins={yellowMins} redMins={redMins} />)}
             </>
           )}
           {checkins.length === 0 && (
@@ -2526,6 +2398,11 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
           </span>
           <div className="flex gap-2 shrink-0 items-center">
             {op.caltopo_map_id && <>
+              {lastMapRefresh && !loadingMap && (
+                <span className="text-xs text-gray-400">
+                  {lastMapRefresh.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+              )}
               <button onClick={loadMap} disabled={loadingMap} className="text-xs text-blue-500 hover:underline">
                 {loadingMap ? '…' : '↺ Refresh'}
               </button>
@@ -2562,16 +2439,16 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
               <p className="text-xs text-gray-400">Use the Rollout tab → One-Click Rollout to publish the IPP marker + ISRID rings.</p>
             </div>
           )}
-          {op.caltopo_map_id && loadingMap && (
+          {op.caltopo_map_id && loadingMap && features.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">Loading map features…</div>
           )}
-          {op.caltopo_map_id && mapError && (
+          {op.caltopo_map_id && mapError && features.length === 0 && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-6">
               <p className="text-red-500 text-sm">{mapError}</p>
               <button onClick={loadMap} className="text-xs text-blue-600 hover:underline">Retry</button>
             </div>
           )}
-          {op.caltopo_map_id && !loadingMap && !mapError && features.length > 0 && MapComponent && (
+          {op.caltopo_map_id && features.length > 0 && MapComponent && (
             <MapComponent features={features} />
           )}
           {op.caltopo_map_id && !loadingMap && !mapError && features.length === 0 && (
@@ -2581,15 +2458,62 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
             </div>
           )}
         </div>
+        {/* CalTopo link with QR hover */}
+        {op.caltopo_map_id && (
+          <CalTopoLinkBar mapId={op.caltopo_map_id} />
+        )}
       </div>
 
-      {/* ── Right widgets (220px) ── */}
-      <div className="shrink-0 space-y-3 overflow-y-auto" style={{ width: 220 }}>
+      {/* ── Right widgets (230px) ── */}
+      <div className="shrink-0 space-y-3 overflow-y-auto" style={{ width: 230 }}>
+        {/* Critical Info */}
+        <div className="bg-white rounded-xl shadow p-3">
+          <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Critical Info</div>
+          <div className="space-y-2 text-xs">
+            {/* Time since last radio check scene-wide */}
+            {(() => {
+              const lastHeard = checkins
+                .filter(c => c.last_heard_at)
+                .map(c => new Date(c.last_heard_at!).getTime())
+                .sort((a, b) => b - a)[0];
+              const lastSceneMins = lastHeard ? Math.round((Date.now() - lastHeard) / 60000) : null;
+              const sceneColor = lastSceneMins == null ? 'text-gray-400'
+                : lastSceneMins > redMins ? 'text-red-600 font-bold'
+                : lastSceneMins > yellowMins ? 'text-yellow-600 font-semibold'
+                : 'text-green-700 font-semibold';
+              return (
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500">Last heard</span>
+                  <span className={sceneColor}>{lastSceneMins != null ? `${lastSceneMins}m ago` : '—'}</span>
+                </div>
+              );
+            })()}
+            {/* IPP in UTM */}
+            <div>
+              <div className="text-gray-500 mb-0.5">IPP (UTM)</div>
+              <div className="font-mono text-gray-800 text-xs leading-snug break-all">
+                {ippLat && ippLon ? formatUTM(ippLat, ippLon) : '—'}
+              </div>
+            </div>
+            {/* LPB Profile */}
+            <div className="flex justify-between items-start gap-1">
+              <span className="text-gray-500 shrink-0">LPB Profile</span>
+              <span className="font-semibold text-gray-800 text-right">{profile.label}</span>
+            </div>
+            <div className="text-gray-400 text-xs">{profile.emoji} 50% zone: {profile.distances.find(d => d.pct === 50)?.km ?? '?'} km</div>
+            {/* Personnel counts */}
+            <div className="border-t pt-2 flex justify-between">
+              <span className="text-gray-500">On scene</span>
+              <span className="font-semibold text-gray-800">{fieldMembers.length} field · {baseMembers.length} base</span>
+            </div>
+          </div>
+        </div>
+
         {/* Team Status */}
         <div className="bg-white rounded-xl shadow p-3">
           <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Team Status</div>
           {tasks.length === 0 ? (
-            <p className="text-xs text-gray-400">No teams yet — use Teams tab.</p>
+            <p className="text-xs text-gray-400">No teams yet — use Personnel Management.</p>
           ) : (
             <div className="space-y-2">
               {tasks.map(t => {
@@ -2597,23 +2521,29 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
                   t.assignments.some(a => a.name.toLowerCase() === c.searcher_name.toLowerCase())
                 );
                 const worstMins = teamCheckins.length
-                  ? Math.max(...teamCheckins.map(c => radioStatus(c.last_heard_at).mins))
+                  ? Math.max(...teamCheckins.map(c => radioStatus(c.last_heard_at, yellowMins, redMins).mins))
                   : 999;
-                const borderColor = worstMins > 60 ? 'border-red-400' : worstMins > 45 ? 'border-yellow-400' : worstMins < 999 ? 'border-green-400' : 'border-gray-200';
-                const textColor   = worstMins > 60 ? 'text-red-600' : worstMins > 45 ? 'text-yellow-600' : 'text-gray-400';
+                const borderColor = worstMins > redMins ? 'border-red-400' : worstMins > yellowMins ? 'border-yellow-400' : worstMins < 999 ? 'border-green-400' : 'border-gray-200';
+                const textColor   = worstMins > redMins ? 'text-red-600 font-bold' : worstMins > yellowMins ? 'text-yellow-600' : 'text-gray-400';
                 return (
                   <div key={t.id} className={`border rounded-lg p-2 ${borderColor}`}>
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-1">
                       <span className="text-xs font-bold text-gray-800 truncate flex-1">{t.name}</span>
-                      <span className={`text-xs font-mono ml-1 ${textColor}`}>
+                      <span className={`text-xs font-mono shrink-0 ${textColor}`}>
                         {worstMins < 999 ? `${worstMins}m` : '—'}
                       </span>
                     </div>
                     {t.current_assignment && (
                       <div className="text-xs text-gray-500 mt-0.5 truncate">▶ {t.current_assignment}</div>
                     )}
-                    <button onClick={() => heardTeam(t)}
-                      className="mt-1 text-xs text-blue-600 hover:underline">✓ Heard team</button>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        t.status === 'deployed' ? 'bg-green-100 text-green-700' :
+                        t.status === 'returned' ? 'bg-gray-100 text-gray-600' :
+                        'bg-yellow-100 text-yellow-700'}`}>{t.status}</span>
+                      <button onClick={() => heardTeam(t)}
+                        className="text-xs text-blue-600 hover:underline">✓ Heard</button>
+                    </div>
                   </div>
                 );
               })}
@@ -2621,77 +2551,82 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
           )}
         </div>
 
-        {/* SM Checklist */}
+        {/* Op Notes */}
         <div className="bg-white rounded-xl shadow p-3">
-          <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">
-            SM Checklist ({SM_CHECKLIST.filter(i => checklist[i.key]).length}/{SM_CHECKLIST.length})
-          </div>
-          <div className="space-y-1.5">
-            {SM_CHECKLIST.map(item => (
-              <label key={item.key} className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={!!checklist[item.key]} onChange={e => setCheck(item.key, e.target.checked)}
-                  className="w-3.5 h-3.5 accent-green-600 shrink-0" />
-                <span className={`text-xs ${checklist[item.key] ? 'line-through text-gray-400' : 'text-gray-700'}`}>{item.label}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {/* Planning Notes */}
-        <div className="bg-white rounded-xl shadow p-3">
-          <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Planning Notes</div>
+          <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Op Notes</div>
           <textarea
             value={planningNotes}
             onChange={e => savePlanning(e.target.value)}
-            rows={5}
+            rows={6}
             placeholder="Sectors, priorities, next tasks…"
             className="w-full text-xs border border-gray-200 rounded p-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-blue-400"
           />
-        </div>
-
-        {/* Quick stats */}
-        <div className="bg-white rounded-xl shadow p-3">
-          <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Stats</div>
-          <div className="space-y-1 text-xs">
-            {[
-              ['Field', String(fieldMembers.length)],
-              ['Base', String(baseMembers.length)],
-              ['Deployed', String(tasks.filter(t => t.status === 'deployed').length)],
-              ['Returned', String(tasks.filter(t => t.status === 'returned').length)],
-            ].map(([k, v]) => (
-              <div key={k} className="flex justify-between">
-                <span className="text-gray-500">{k}</span>
-                <span className="font-semibold text-gray-800">{v}</span>
-              </div>
-            ))}
-          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function MemberRow({ c, onHeard, isBase }: { c: CheckIn; onHeard: () => void; isBase?: boolean }) {
+function MemberRow({ c, onHeard, isBase, yellowMins = 45, redMins = 60 }: {
+  c: CheckIn; onHeard: () => void; isBase?: boolean; yellowMins?: number; redMins?: number;
+}) {
   const ddt = new Date(c.drop_dead_time);
   const minsLeft = Math.floor((ddt.getTime() - Date.now()) / 60000);
-  const ddtOverdue  = minsLeft < 0;
-  const ddtUrgent   = !ddtOverdue && minsLeft < 15;
-  const rs = radioStatus(c.last_heard_at);
+  const ddtOverdue = minsLeft < 0;
+  const ddtUrgent  = !ddtOverdue && minsLeft < 15;
+  const rs = radioStatus(c.last_heard_at, yellowMins, redMins);
 
   return (
     <div className="flex items-center gap-1.5 px-3 py-1.5 border-b text-xs hover:bg-gray-50 group">
-      {/* Radio status dot */}
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isBase ? 'bg-gray-300' : rs.color}`}
         title={c.last_heard_at ? `Last heard ${rs.mins}m ago` : 'Not yet confirmed'} />
       <span className="flex-1 font-medium text-gray-800 truncate">{c.searcher_name}</span>
-      {/* Drop-dead countdown */}
+      {rs.mins < 999 && !isBase && (
+        <span className={`font-mono shrink-0 text-xs mr-0.5 ${rs.color === 'bg-red-500' ? 'text-red-500' : rs.color === 'bg-yellow-400' ? 'text-yellow-600' : 'text-green-600'}`}>
+          {rs.mins}m
+        </span>
+      )}
       <span className={`font-mono shrink-0 ${ddtOverdue ? 'text-red-600 font-bold' : ddtUrgent ? 'text-yellow-600' : 'text-gray-400'}`}>
         {ddtOverdue ? `+${-minsLeft}m` : `${minsLeft}m`}
       </span>
-      {/* Heard button — visible on hover */}
       <button onClick={e => { e.stopPropagation(); onHeard(); }}
         className="shrink-0 text-gray-300 hover:text-green-600 transition-colors opacity-0 group-hover:opacity-100"
-        title="Mark heard (radio check-in)">✓</button>
+        title="Mark heard">✓</button>
+    </div>
+  );
+}
+
+// ── CalTopo Link Bar with hover QR ────────────────────────────────────────────
+
+function CalTopoLinkBar({ mapId }: { mapId: string }) {
+  const [qrData, setQrData] = useState('');
+  const [showQr, setShowQr] = useState(false);
+  const mapUrl = `https://caltopo.com/m/${mapId}`;
+
+  useEffect(() => {
+    import('qrcode').then(QRCode => {
+      QRCode.toDataURL(mapUrl, { width: 180, margin: 1 }).then(setQrData).catch(() => {});
+    });
+  }, [mapId]);
+
+  return (
+    <div className="relative border-t border-gray-100 px-3 py-2 flex items-center gap-3 bg-gray-50 shrink-0">
+      <span className="text-xs text-gray-500">CalTopo:</span>
+      <a href={mapUrl} target="_blank" rel="noopener noreferrer"
+        className="text-xs text-blue-600 hover:underline font-mono flex-1 truncate">{mapUrl}</a>
+      <div
+        className="relative shrink-0"
+        onMouseEnter={() => setShowQr(true)}
+        onMouseLeave={() => setShowQr(false)}
+      >
+        <span className="text-xs text-gray-400 cursor-default border border-gray-200 rounded px-1.5 py-0.5 hover:border-blue-400 hover:text-blue-600 transition-colors">QR</span>
+        {showQr && qrData && (
+          <div className="absolute bottom-8 right-0 z-50 bg-white border border-gray-200 rounded-xl shadow-lg p-2">
+            <img src={qrData} alt="CalTopo QR" width={150} height={150} className="rounded" />
+            <p className="text-xs text-center text-gray-400 mt-1">Scan to open map</p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -3030,6 +2965,1027 @@ function PresetForm({
         <button onClick={onSave} disabled={saveDisabled}
           className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">Save</button>
       </div>
+    </div>
+  );
+}
+
+// ── Check-In tab ──────────────────────────────────────────────────────────────
+
+interface RosterPerson {
+  id: string;
+  name: string;
+  qualifications?: string;
+  phone?: string;
+  contact?: string;
+  checkin_id?: string;
+}
+
+function CheckInTab({ op }: { op: Operation }) {
+  const token = typeof window !== 'undefined' ? (localStorage.getItem('sarmanager_session_token') ?? '') : '';
+  const authHdr = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
+  const checkInUrl = typeof window !== 'undefined' ? `${window.location.origin}/checkin/${op.id}` : `/checkin/${op.id}`;
+
+  const [checkins, setCheckins] = useState<CheckIn[]>([]);
+  const [roster, setRoster]   = useState<RosterPerson[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [qrData, setQrData]   = useState('');
+  const [copied, setCopied]   = useState(false);
+
+  // manual form
+  const [name, setName]           = useState('');
+  const [fitForField, setFitForField] = useState(true);
+  const defaultDDT = () => {
+    const d = new Date(Date.now() + 6 * 3600_000);
+    return d.toTimeString().slice(0, 5); // HH:MM
+  };
+  const [availTime, setAvailTime] = useState(defaultDDT);
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState('');
+  const [lastCheckedIn, setLastCheckedIn] = useState('');
+
+  async function load() {
+    setLoading(true);
+    const [ciRes, rostRes] = await Promise.all([
+      fetch(`/api/checkin/list?operationId=${op.id}`, { headers: { Authorization: `Bearer ${token}` } }),
+      fetch(`/api/personnel?operation_id=${op.id}`,   { headers: { Authorization: `Bearer ${token}` } }),
+    ]);
+    if (ciRes.ok)   { const d = await ciRes.json();   setCheckins(d.checkins ?? []); }
+    if (rostRes.ok) { const d = await rostRes.json();  setRoster(d.personnel ?? []); }
+    setLoading(false);
+  }
+
+  const d4hNumber = op.d4h_incident_id ?? op.d4h_exercise_id ?? '';
+  useEffect(() => {
+    if (!d4hNumber) return;
+    import('qrcode').then(QRCode => {
+      QRCode.toDataURL(d4hNumber, { width: 220, margin: 1 }).then(setQrData).catch(() => {});
+    });
+  }, [d4hNumber]);
+
+  useEffect(() => { load(); }, [op.id]);
+
+  function buildDropDeadTime(timeStr: string): string {
+    const [h, m] = timeStr.split(':').map(Number);
+    const now = new Date();
+    const ddt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0, 0);
+    // if the time has already passed today, assume tomorrow
+    if (ddt.getTime() < Date.now()) ddt.setDate(ddt.getDate() + 1);
+    return ddt.toISOString();
+  }
+
+  async function checkIn(searcherName: string, personnelId?: string) {
+    if (!searcherName.trim()) return;
+    setSaving(true); setSaveErr('');
+    try {
+      const res = await fetch('/api/checkin/attendance', {
+        method: 'POST',
+        headers: authHdr,
+        body: JSON.stringify({
+          operationId: op.id,
+          personnelId: personnelId ?? null,
+          searcherName: searcherName.trim(),
+          fitForField,
+          dropDeadTime: buildDropDeadTime(availTime),
+          qualsConfirmed: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Check-in failed');
+      setLastCheckedIn(searcherName.trim());
+      setName(''); setAvailTime(defaultDDT()); setFitForField(true);
+      load();
+    } catch (e: unknown) {
+      setSaveErr(e instanceof Error ? e.message : 'Check-in failed');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function heardMember(checkinId: string) {
+    const now = new Date().toISOString();
+    await fetch(`/api/checkin/${checkinId}`, {
+      method: 'PATCH',
+      headers: authHdr,
+      body: JSON.stringify({ last_heard_at: now }),
+    });
+    setCheckins(prev => prev.map(c => c.id === checkinId ? { ...c, last_heard_at: now } : c));
+  }
+
+  const notCheckedIn = roster.filter(p => !p.checkin_id && !checkins.some(c => c.searcher_name.toLowerCase() === p.name.toLowerCase()));
+
+  if (loading) return <div className="bg-white rounded-xl shadow p-6 text-center text-gray-500">Loading…</div>;
+
+  return (
+    <div className="space-y-4">
+
+    {/* ── Check-in URL + D4H QR code ── */}
+    <div className="bg-white rounded-xl shadow p-4 border-l-4 border-green-500">
+      <div className="flex items-start gap-4">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-bold text-gray-700 mb-1">Searcher Check-In Link</div>
+          <div className="flex items-center gap-2 mb-2">
+            <code className="flex-1 text-xs bg-gray-50 border border-gray-200 rounded px-2 py-1.5 text-blue-700 font-mono break-all">{checkInUrl}</code>
+            <button
+              onClick={() => { navigator.clipboard.writeText(checkInUrl); setCopied(true); setTimeout(() => setCopied(false), 2500); }}
+              className="shrink-0 px-3 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 transition-colors">
+              {copied ? '✓ Copied' : 'Copy'}
+            </button>
+          </div>
+          <p className="text-xs text-gray-500">Sent in the Twilio callout SMS. Searchers open this on their phone — no login required.</p>
+          {(op.d4h_incident_id ?? op.d4h_exercise_id) && (
+            <div className="mt-2 text-xs text-gray-500">
+              D4H {op.d4h_activity_type === 'exercise' ? 'Exercise' : 'Incident'} #<span className="font-bold text-gray-700">{op.d4h_incident_id ?? op.d4h_exercise_id}</span>
+              <span className="text-gray-400 ml-1">— QR encodes this number →</span>
+            </div>
+          )}
+        </div>
+        {qrData && (
+          <div className="shrink-0 text-center">
+            <img src={qrData} alt="D4H reference QR code" width={110} height={110} className="rounded border border-gray-200" />
+            <div className="text-xs text-gray-400 mt-1">D4H #{op.d4h_incident_id ?? op.d4h_exercise_id}</div>
+          </div>
+        )}
+      </div>
+    </div>
+
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Left: checked-in list */}
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+          <span className="text-sm font-bold text-gray-700">On Scene ({checkins.length})</span>
+          <button onClick={load} className="text-xs text-blue-500 hover:underline">↺ Refresh</button>
+        </div>
+        {checkins.length === 0 ? (
+          <div className="p-6 text-center text-gray-400 text-sm">No searchers checked in yet.</div>
+        ) : (
+          <div className="divide-y text-sm">
+            {checkins.map(c => {
+              const rs = radioStatus(c.last_heard_at);
+              const ddt = new Date(c.drop_dead_time);
+              const minsLeft = Math.floor((ddt.getTime() - Date.now()) / 60000);
+              const ddtOver = minsLeft < 0;
+              return (
+                <div key={c.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${c.fit_for_field ? rs.color : 'bg-gray-300'}`}
+                    title={c.last_heard_at ? `Last heard ${rs.mins}m ago` : 'Not yet confirmed'} />
+                  <span className="flex-1 font-medium text-gray-800">{c.searcher_name}</span>
+                  {!c.fit_for_field && <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">Base</span>}
+                  <span className={`text-xs font-mono ${ddtOver ? 'text-red-600 font-bold' : minsLeft < 15 ? 'text-yellow-600' : 'text-gray-400'}`}>
+                    {ddtOver ? `+${-minsLeft}m` : `${minsLeft}m`}
+                  </span>
+                  <button onClick={() => heardMember(c.id)}
+                    className="text-xs text-gray-300 hover:text-green-600 transition-colors px-1"
+                    title="Mark heard">✓</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Right: check-in form + roster */}
+      <div className="space-y-4">
+        {/* Manual check-in form */}
+        <div className="bg-white rounded-xl shadow p-4">
+          <h3 className="text-sm font-bold text-gray-700 mb-3">Check In Searcher</h3>
+          {lastCheckedIn && (
+            <div className="mb-3 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+              ✓ {lastCheckedIn} checked in
+            </div>
+          )}
+          {saveErr && <p className="mb-3 text-sm text-red-600">{saveErr}</p>}
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Name</label>
+              <input
+                list="roster-names"
+                value={name}
+                onChange={e => setName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') checkIn(name); }}
+                placeholder="Full name…"
+                className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <datalist id="roster-names">
+                {notCheckedIn.map(p => <option key={p.id} value={p.name} />)}
+              </datalist>
+            </div>
+            <div className="flex gap-3">
+              <div className="flex-1">
+                <label className="block text-xs text-gray-500 mb-1">Available until</label>
+                <input
+                  type="time"
+                  value={availTime}
+                  onChange={e => setAvailTime(e.target.value)}
+                  className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div className="flex items-end pb-2">
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="checkbox" checked={fitForField} onChange={e => setFitForField(e.target.checked)}
+                    className="w-4 h-4 accent-green-600" />
+                  Fit for field
+                </label>
+              </div>
+            </div>
+            <button
+              onClick={() => checkIn(name)}
+              disabled={saving || !name.trim()}
+              className="w-full bg-blue-600 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+              {saving ? 'Checking in…' : 'Check In →'}
+            </button>
+          </div>
+        </div>
+
+        {/* Roster — not checked in */}
+        {notCheckedIn.length > 0 && (
+          <div className="bg-white rounded-xl shadow overflow-hidden">
+            <div className="px-4 py-3 border-b bg-gray-50">
+              <span className="text-sm font-bold text-gray-700">Roster — Not On Scene ({notCheckedIn.length})</span>
+            </div>
+            <div className="divide-y text-sm">
+              {notCheckedIn.map(p => (
+                <div key={p.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-gray-50">
+                  <span className="flex-1 text-gray-800">{p.name}</span>
+                  {p.qualifications && (
+                    <span className="text-xs text-gray-400 truncate max-w-24">
+                      {p.qualifications.split(/[,;]+/).slice(0, 2).join(', ')}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => {
+                      setName(p.name);
+                      checkIn(p.name, p.id);
+                    }}
+                    className="text-xs bg-blue-600 text-white px-2.5 py-1 rounded hover:bg-blue-700 shrink-0">
+                    Check In →
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+    </div>
+  );
+}
+
+// ── CalTopo Browse tab ────────────────────────────────────────────────────────
+
+function CalTopoBrowseTab({ op }: { op: Operation }) {
+  const { settings } = useSettings();
+  const [folders, setFolders] = useState<{ id: string; title: string }[]>([]);
+  const [loadingFolders, setLoadingFolders] = useState(false);
+  const [folderErr, setFolderErr] = useState('');
+  const [iframeBlocked, setIframeBlocked] = useState(false);
+
+  const mapUrl  = op.caltopo_map_id ? `https://caltopo.com/m/${op.caltopo_map_id}` : null;
+  const folderUrl = settings.folderId
+    ? `https://caltopo.com/o#${settings.accountId ?? ''}/${settings.folderId}`
+    : null;
+
+  async function discoverFolders() {
+    if (!settings.credentialId || !settings.secret || !settings.accountId) return;
+    setLoadingFolders(true); setFolderErr('');
+    try {
+      const res = await fetch('/api/caltopo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'discoverFolders',
+          credentialId: settings.credentialId,
+          secret: settings.secret,
+          accountId: settings.accountId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Failed to load folders');
+      setFolders(data.folders ?? []);
+    } catch (e: unknown) {
+      setFolderErr(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setLoadingFolders(false);
+    }
+  }
+
+  useEffect(() => { discoverFolders(); }, []);
+
+  return (
+    <div className="space-y-4">
+      {/* Quick links */}
+      <div className="bg-white rounded-xl shadow p-4 flex flex-wrap gap-3 items-center">
+        {mapUrl && (
+          <a href={mapUrl} target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+            Open Operation Map ↗
+          </a>
+        )}
+        {folderUrl && (
+          <a href={folderUrl} target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 border border-blue-600 text-blue-600 px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors">
+            Browse CalTopo Folder ↗
+          </a>
+        )}
+        <a href="https://caltopo.com/o" target="_blank" rel="noopener noreferrer"
+          className="text-sm text-gray-500 hover:underline">
+          Open CalTopo ↗
+        </a>
+        {!mapUrl && (
+          <p className="text-sm text-gray-500">No map linked — run the One-Click Rollout first.</p>
+        )}
+      </div>
+
+      {/* Embedded map iframe */}
+      {mapUrl && !iframeBlocked && (
+        <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="px-4 py-2 border-b bg-gray-50 flex items-center justify-between">
+            <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">
+              CalTopo — {op.caltopo_map_id}
+            </span>
+            <button onClick={() => setIframeBlocked(true)} className="text-xs text-gray-400 hover:underline">
+              If map doesn't load, dismiss
+            </button>
+          </div>
+          <iframe
+            src={mapUrl}
+            title="CalTopo map"
+            style={{ width: '100%', height: 520, border: 'none', display: 'block' }}
+            onError={() => setIframeBlocked(true)}
+          />
+        </div>
+      )}
+      {mapUrl && iframeBlocked && (
+        <div className="bg-white rounded-xl shadow p-6 text-center text-gray-500">
+          <p className="mb-3 text-sm">CalTopo doesn't allow embedding — open it directly.</p>
+          <a href={mapUrl} target="_blank" rel="noopener noreferrer"
+            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors">
+            Open Map in CalTopo ↗
+          </a>
+        </div>
+      )}
+
+      {/* Discovered folders */}
+      {(folders.length > 0 || loadingFolders || folderErr) && (
+        <div className="bg-white rounded-xl shadow p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-gray-700">Your CalTopo Folders</h3>
+            <button onClick={discoverFolders} disabled={loadingFolders} className="text-xs text-blue-500 hover:underline">
+              {loadingFolders ? '…' : '↺ Refresh'}
+            </button>
+          </div>
+          {folderErr && <p className="text-sm text-red-500 mb-2">{folderErr}</p>}
+          {folders.length === 0 && !loadingFolders && !folderErr && (
+            <p className="text-sm text-gray-400">No folders found in your CalTopo account.</p>
+          )}
+          <div className="space-y-2">
+            {folders.map(f => (
+              <div key={f.id} className="flex items-center justify-between p-3 rounded-lg bg-gray-50 border border-gray-200">
+                <span className="text-sm text-gray-800 font-medium">{f.title}</span>
+                <span className="text-xs text-gray-400 font-mono">{f.id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Operation Edit tab ────────────────────────────────────────────────────────
+
+function OperationEditTab({ op, onUpdated }: { op: Operation; onUpdated: (op: Operation) => void }) {
+  const token = typeof window !== 'undefined' ? (localStorage.getItem('sarmanager_session_token') ?? '') : '';
+
+  const [form, setForm] = useState<Record<string, string>>({
+    name:                    op.name ?? '',
+    lost_person_name:        op.lost_person_name ?? '',
+    lost_person_age:         op.lost_person_age != null ? String(op.lost_person_age) : '',
+    subject_sex:             op.subject_sex ?? '',
+    tasking_agency:          op.tasking_agency ?? '',
+    oic_name:                op.oic_name ?? '',
+    oic_phone:               op.oic_phone ?? '',
+    subject_clothing:        op.subject_clothing ?? '',
+    subject_gear:            op.subject_gear ?? '',
+    lost_person_description: op.lost_person_description ?? '',
+    pls_location:            op.pls_location ?? '',
+    last_seen_location:      op.last_seen_location ?? '',
+    subject_circumstance:    op.subject_circumstance ?? '',
+    subject_condition:       op.subject_condition ?? '',
+    safety_concerns:         op.safety_concerns ?? '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  function set(field: string, val: string) {
+    setForm(prev => ({ ...prev, [field]: val }));
+  }
+
+  async function save() {
+    setSaving(true); setMsg(null);
+    try {
+      const payload: Record<string, unknown> = { ...form };
+      if (payload.lost_person_age) payload.lost_person_age = Number(payload.lost_person_age);
+      else delete payload.lost_person_age;
+      const res = await fetch(`/api/operations/${op.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Save failed');
+      onUpdated(data.operation);
+      setMsg({ ok: true, text: 'Saved.' });
+      setTimeout(() => setMsg(null), 3000);
+    } catch (e: unknown) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : 'Save failed' });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inp = (field: string, label: string, type = 'text', full = false) => (
+    <div className={full ? 'col-span-2' : ''}>
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <input
+        type={type}
+        value={form[field] ?? ''}
+        onChange={e => set(field, e.target.value)}
+        className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+    </div>
+  );
+
+  const area = (field: string, label: string) => (
+    <div className="col-span-2">
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <textarea
+        rows={3}
+        value={form[field] ?? ''}
+        onChange={e => set(field, e.target.value)}
+        className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+      />
+    </div>
+  );
+
+  return (
+    <div className="bg-white rounded-xl shadow p-6 max-w-2xl">
+      <div className="flex items-center justify-between mb-5">
+        <h3 className="font-bold text-gray-800">Edit Operation Details</h3>
+        {msg && (
+          <span className={`text-sm font-medium ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {inp('name', 'Operation Name', 'text', true)}
+
+        <div className="col-span-2 border-t pt-4 mt-1">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Subject</div>
+        </div>
+
+        {inp('lost_person_name', 'Name')}
+        {inp('lost_person_age', 'Age', 'number')}
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Sex</label>
+          <select
+            value={form.subject_sex ?? ''}
+            onChange={e => set('subject_sex', e.target.value)}
+            className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">—</option>
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+            <option value="Unknown">Unknown</option>
+          </select>
+        </div>
+        {inp('subject_clothing', 'Clothing', 'text', true)}
+        {inp('subject_gear', 'Gear / Equipment', 'text', true)}
+        {inp('lost_person_description', 'Physical Description', 'text', true)}
+
+        <div className="col-span-2 border-t pt-4 mt-1">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Tasking</div>
+        </div>
+
+        {inp('tasking_agency', 'Agency')}
+        {inp('oic_name', 'OIC Name')}
+        {inp('oic_phone', 'OIC Phone', 'tel')}
+
+        <div className="col-span-2 border-t pt-4 mt-1">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Location</div>
+        </div>
+
+        {inp('pls_location', 'PLS Description', 'text', true)}
+        {inp('last_seen_location', 'LKP Description', 'text', true)}
+
+        <div className="col-span-2 border-t pt-4 mt-1">
+          <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Condition &amp; Safety</div>
+        </div>
+
+        {area('subject_circumstance', 'Circumstances')}
+        {area('subject_condition', 'Medical Condition')}
+        {area('safety_concerns', 'Safety Concerns')}
+      </div>
+
+      <div className="flex gap-3 mt-6">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+          {saving ? 'Saving…' : 'Save Changes'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Communications tab ────────────────────────────────────────────────────────
+
+const WB_NOTES_KEY = 'sarmanager_wb_notes';
+
+interface WbNote {
+  id: string;
+  text: string;
+  postedAt: string;
+  postedToD4H: boolean;
+}
+
+function loadWbNotes(opId: string): WbNote[] {
+  try { return JSON.parse(localStorage.getItem(`${WB_NOTES_KEY}_${opId}`) ?? '[]'); }
+  catch { return []; }
+}
+function saveWbNotes(opId: string, notes: WbNote[]) {
+  localStorage.setItem(`${WB_NOTES_KEY}_${opId}`, JSON.stringify(notes));
+}
+
+function CommunicationsTab({ op, callD4H, d4hConfigured, settings }: {
+  op: Operation;
+  callD4H: D4HCallFn;
+  d4hConfigured: boolean;
+  settings: ReturnType<typeof useSettings>['settings'];
+}) {
+  // ── Whiteboard ──
+  const [notes, setNotes] = useState<WbNote[]>(() => loadWbNotes(op.id));
+  const [newNote, setNewNote] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [postErr, setPostErr] = useState('');
+
+  async function addNote() {
+    if (!newNote.trim()) return;
+    setPosting(true); setPostErr('');
+    const note: WbNote = {
+      id: crypto.randomUUID(),
+      text: newNote.trim(),
+      postedAt: new Date().toISOString(),
+      postedToD4H: false,
+    };
+    try {
+      if (d4hConfigured && (op.d4h_incident_id || op.d4h_exercise_id)) {
+        const incidentId = op.d4h_incident_id;
+        const exerciseId = op.d4h_exercise_id;
+        await callD4H('postUpdate', {
+          ...(incidentId ? { incidentId } : {}),
+          ...(exerciseId ? { exerciseId } : {}),
+          message: note.text,
+        });
+        note.postedToD4H = true;
+      }
+    } catch (e: unknown) {
+      setPostErr(e instanceof Error ? e.message : 'Failed to post to D4H');
+    }
+    const next = [note, ...notes];
+    saveWbNotes(op.id, next);
+    setNotes(next);
+    setNewNote('');
+    setPosting(false);
+  }
+
+  function deleteNote(id: string) {
+    const next = notes.filter(n => n.id !== id);
+    saveWbNotes(op.id, next);
+    setNotes(next);
+  }
+
+  // ── Second Callout with member filter ──
+  const [checkins, setCheckins] = useState<CheckIn[]>([]);
+  const [roster, setRoster]     = useState<{ id: string; name: string; phone?: string }[]>([]);
+  const [loadingPeople, setLoadingPeople] = useState(false);
+  const [scope, setScope] = useState<'all' | 'onscene' | 'notscene'>('all');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [calloutMsg, setCalloutMsg] = useState(() => buildCalloutSMS(op));
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState('');
+  const [sendErr, setSendErr] = useState('');
+  const token = typeof window !== 'undefined' ? (localStorage.getItem('sarmanager_session_token') ?? '') : '';
+
+  async function loadPeople() {
+    setLoadingPeople(true);
+    const [ciRes, rRes] = await Promise.all([
+      fetch(`/api/checkin/list?operationId=${op.id}`, { headers: { Authorization: `Bearer ${token}` } }),
+      fetch('/api/personnel', { headers: { Authorization: `Bearer ${token}` } }),
+    ]);
+    if (ciRes.ok) { const d = await ciRes.json(); setCheckins(d.checkins ?? []); }
+    if (rRes.ok)  { const d = await rRes.json();  setRoster(d.personnel ?? []); }
+    setLoadingPeople(false);
+  }
+
+  useEffect(() => { loadPeople(); }, [op.id]);
+
+  const onSceneNames = new Set(checkins.map(c => c.searcher_name.toLowerCase()));
+
+  const filteredRoster = roster.filter(p => {
+    if (scope === 'onscene')  return onSceneNames.has(p.name.toLowerCase());
+    if (scope === 'notscene') return !onSceneNames.has(p.name.toLowerCase());
+    return true;
+  });
+
+  function toggleSelect(id: string) {
+    setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  function selectAll() { setSelectedIds(new Set(filteredRoster.map(p => p.id))); }
+  function clearAll()  { setSelectedIds(new Set()); }
+
+  async function sendCallout() {
+    setSending(true); setSendErr(''); setSent('');
+    try {
+      // D4H callout — targets the whole roster via D4H duty callout system
+      if (d4hConfigured) {
+        await callD4H('sendCallout', { message: calloutMsg.slice(0, 150), incidentId: op.d4h_incident_id }).catch(() => {});
+      }
+      // Twilio: SMS + voice to configured number (Twilio targets roster via D4H-linked phones)
+      if (settings.twilioAccountSid && settings.twilioAuthToken && settings.twilioFromNumber) {
+        const checkInUrl = typeof window !== 'undefined' ? `${window.location.origin}/checkin/${op.id}` : `/checkin/${op.id}`;
+        const agency = op.tasking_agency ?? 'SAR';
+        const age = op.lost_person_age ? `${op.lost_person_age}yo` : '';
+        const sex = op.subject_sex ? op.subject_sex.toLowerCase() : '';
+        const profileLabel = ISRID[op.subject_category ?? '']?.label ?? 'person';
+        const subject = [age, sex, profileLabel].filter(Boolean).join(' ');
+        const callMsg = `${agency} SAR callout. Locate missing ${subject}. Please respond immediately to your search manager.`;
+        const twilioBase = { accountSid: settings.twilioAccountSid, authToken: settings.twilioAuthToken, fromNumber: settings.twilioFromNumber };
+        await Promise.allSettled([
+          fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'sms', ...twilioBase, message: `${calloutMsg.slice(0, 140)} ${checkInUrl}`.slice(0, 160) }) }),
+          fetch('/api/twilio/send', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'call', ...twilioBase, message: callMsg }) }),
+        ]);
+      }
+      setSent(new Date().toLocaleTimeString('en-CA'));
+    } catch (e: unknown) {
+      setSendErr(e instanceof Error ? e.message : 'Failed');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+
+      {/* ── D4H Whiteboard Notes ── */}
+      <div className="bg-white rounded-xl shadow p-5">
+        <h3 className="font-bold text-gray-800 mb-1">D4H Whiteboard / Log</h3>
+        <p className="text-xs text-gray-500 mb-3">Notes are posted to the D4H incident log and stored locally. Deleting removes them locally only.</p>
+
+        <div className="flex gap-2 mb-3">
+          <textarea
+            value={newNote}
+            onChange={e => setNewNote(e.target.value)}
+            rows={2}
+            placeholder="Enter note to add to D4H whiteboard…"
+            className="flex-1 p-2 border border-gray-300 rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button onClick={addNote} disabled={posting || !newNote.trim()}
+            className="shrink-0 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            {posting ? '…' : 'Post'}
+          </button>
+        </div>
+        {postErr && <p className="text-xs text-red-600 mb-2">{postErr}</p>}
+
+        {notes.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-3">No notes yet.</p>
+        ) : (
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {notes.map(n => (
+              <div key={n.id} className="flex items-start gap-2 p-3 bg-gray-50 rounded-lg">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{n.text}</p>
+                  <div className="text-xs text-gray-400 mt-1 flex items-center gap-2">
+                    {new Date(n.postedAt).toLocaleString('en-CA')}
+                    {n.postedToD4H
+                      ? <span className="text-blue-600">✓ D4H</span>
+                      : <span className="text-gray-400">local only</span>}
+                  </div>
+                </div>
+                <button onClick={() => deleteNote(n.id)}
+                  className="shrink-0 text-gray-300 hover:text-red-500 transition-colors text-sm px-1">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Second Callout ── */}
+      <div className="bg-white rounded-xl shadow p-5">
+        <h3 className="font-bold text-gray-800 mb-1">Send Callout</h3>
+        <p className="text-xs text-gray-500 mb-4">Send via D4H + Twilio SMS &amp; voice. Filter members by on-scene status.</p>
+
+        {/* Scope filter */}
+        <div className="flex gap-2 mb-3">
+          {(['all', 'onscene', 'notscene'] as const).map(s => (
+            <button key={s} onClick={() => { setScope(s); setSelectedIds(new Set()); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${scope === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'}`}>
+              {s === 'all' ? 'All Roster' : s === 'onscene' ? 'On Scene' : 'Not On Scene'}
+            </button>
+          ))}
+          <button onClick={loadPeople} disabled={loadingPeople} className="ml-auto text-xs text-gray-400 hover:underline">↺</button>
+        </div>
+
+        {/* Member list */}
+        <div className="border border-gray-200 rounded-xl overflow-hidden max-h-48 overflow-y-auto mb-3">
+          {loadingPeople ? (
+            <div className="p-4 text-center text-gray-400 text-sm">Loading…</div>
+          ) : filteredRoster.length === 0 ? (
+            <div className="p-4 text-center text-gray-400 text-sm">No members in this group.</div>
+          ) : (
+            filteredRoster.map((p, i) => {
+              const isOnScene = onSceneNames.has(p.name.toLowerCase());
+              return (
+                <label key={p.id}
+                  className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-blue-50 ${i > 0 ? 'border-t border-gray-100' : ''} ${selectedIds.has(p.id) ? 'bg-blue-50' : 'bg-white'}`}>
+                  <input type="checkbox" checked={selectedIds.has(p.id)} onChange={() => toggleSelect(p.id)}
+                    className="w-4 h-4 accent-blue-600 shrink-0" />
+                  <span className="flex-1 text-sm text-gray-800">{p.name}</span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded-full ${isOnScene ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                    {isOnScene ? 'On scene' : 'Not on scene'}
+                  </span>
+                </label>
+              );
+            })
+          )}
+        </div>
+
+        <div className="flex gap-2 mb-3 text-xs">
+          <button onClick={selectAll} className="text-blue-600 hover:underline">Select all ({filteredRoster.length})</button>
+          <span className="text-gray-300">·</span>
+          <button onClick={clearAll} className="text-gray-500 hover:underline">Clear</button>
+          <span className="text-gray-500 ml-auto">{selectedIds.size} selected</span>
+        </div>
+
+        {/* Message */}
+        <div className="mb-3">
+          <label className="block text-xs font-medium text-gray-600 mb-1">Callout message (max 150 chars for SMS)</label>
+          <textarea
+            value={calloutMsg}
+            onChange={e => setCalloutMsg(e.target.value.slice(0, 150))}
+            rows={3}
+            className={`w-full p-2 border rounded-lg text-sm resize-none font-mono focus:outline-none focus:ring-2 ${calloutMsg.length >= 150 ? 'border-red-400 focus:ring-red-400' : 'border-gray-300 focus:ring-blue-500'}`}
+          />
+          <div className={`text-xs mt-1 text-right ${calloutMsg.length >= 150 ? 'text-red-600' : 'text-gray-400'}`}>{calloutMsg.length}/150</div>
+        </div>
+
+        {sendErr && <p className="text-xs text-red-600 mb-2">{sendErr}</p>}
+        {sent && <p className="text-xs text-green-600 mb-2">✓ Callout sent at {sent}</p>}
+
+        <button onClick={sendCallout} disabled={sending}
+          className="w-full bg-orange-600 text-white py-2.5 rounded-lg text-sm font-bold hover:bg-orange-700 disabled:opacity-50 transition-colors">
+          {sending ? 'Sending…' : '📣 Send D4H + Twilio Callout'}
+        </button>
+        <p className="text-xs text-gray-400 mt-2">Sends D4H duty callout to full roster + Twilio SMS (with check-in link) + voice to configured number.</p>
+      </div>
+    </div>
+  );
+}
+
+// ── Personnel Management tab ──────────────────────────────────────────────────
+
+function PersonnelManagementTab({ op, onUpdated }: { op: Operation; onUpdated: (op: Operation) => void }) {
+  const [section, setSection] = useState<'checkin' | 'teams'>('checkin');
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        {(['checkin', 'teams'] as const).map(s => (
+          <button key={s} onClick={() => setSection(s)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${section === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'}`}>
+            {s === 'checkin' ? 'Check-In' : 'Teams'}
+          </button>
+        ))}
+      </div>
+      {section === 'checkin' && <CheckInTab op={op} />}
+      {section === 'teams'   && <TeamsTab op={op} />}
+    </div>
+  );
+}
+
+// ── IMT Checklists tab ────────────────────────────────────────────────────────
+
+const DEFAULT_IMT_CHECKLISTS = [
+  { title: 'Incident Commander', color: '#3b82f6', tasks: [
+    'Move to Fire Hall / arrange driver from IMT',
+    'Inform SAR AB',
+    'Inform Local Liaison Officers',
+    'Brief Ops & Planning',
+    'Interview family',
+    'Create IAP',
+  ]},
+  { title: 'Operations Chief', color: '#f59e0b', tasks: [
+    'Move to Fire Hall',
+    'Manage load out',
+    'Unforward Ops Cell',
+    'Establish comms with SM',
+    'Monitor D4H — create teams',
+    'Conduct safety brief',
+    'Deploy',
+  ]},
+  { title: 'Planning Chief', color: '#10b981', tasks: [
+    'Establish virtual hub',
+    'Send D4H callout (Twilio)',
+    'Create CalTopo map + ISRID rings',
+    'Post to D4H whiteboard',
+    'Start log',
+    'Move to CP once established',
+  ]},
+  { title: 'Searchers', color: '#8b5cf6', tasks: [
+    'Reply to D4H callout',
+    'State destination (Firehall or ICP with ETA)',
+    'Attend team briefing',
+    'Sign out equipment',
+    'Conduct safety brief with team leader',
+    'Radio check every 60 minutes',
+  ]},
+];
+
+const IMT_CHECKLISTS_EDIT_KEY = 'sarmanager_imt_checklists';
+
+function IMTChecklistsTab({ op, settings }: {
+  op: Operation;
+  settings: ReturnType<typeof useSettings>['settings'];
+}) {
+  // SM Checklist stored per-operation
+  const clKey = `sar_checklist_${op.id}`;
+  const [checklist, setChecklist] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    try { setChecklist(JSON.parse(localStorage.getItem(clKey) ?? '{}')); } catch { /* */ }
+  }, [op.id]);
+  function setCheck(key: string, val: boolean) {
+    const next = { ...checklist, [key]: val };
+    setChecklist(next);
+    localStorage.setItem(clKey, JSON.stringify(next));
+  }
+
+  // Configurable checklists — use settings if set, else localStorage override, else defaults
+  const [editMode, setEditMode] = useState(false);
+  const storedChecklists: typeof DEFAULT_IMT_CHECKLISTS = (() => {
+    if (settings.imtChecklists) return settings.imtChecklists;
+    try {
+      const s = localStorage.getItem(IMT_CHECKLISTS_EDIT_KEY);
+      return s ? JSON.parse(s) : DEFAULT_IMT_CHECKLISTS;
+    } catch { return DEFAULT_IMT_CHECKLISTS; }
+  })();
+  const [checklists, setChecklists] = useState(storedChecklists);
+
+  // Edit state
+  const [editData, setEditData] = useState(() => JSON.parse(JSON.stringify(storedChecklists)));
+
+  function saveEdits() {
+    localStorage.setItem(IMT_CHECKLISTS_EDIT_KEY, JSON.stringify(editData));
+    setChecklists(editData);
+    setEditMode(false);
+  }
+
+  function addRole() {
+    setEditData((prev: typeof DEFAULT_IMT_CHECKLISTS) => [...prev, { title: 'New Role', color: '#6b7280', tasks: [''] }]);
+  }
+
+  function updateRole(idx: number, field: 'title' | 'color', val: string) {
+    setEditData((prev: typeof DEFAULT_IMT_CHECKLISTS) => prev.map((r, i) => i === idx ? { ...r, [field]: val } : r));
+  }
+
+  function updateTasks(idx: number, text: string) {
+    const tasks = text.split('\n').map((s: string) => s.trim()).filter(Boolean);
+    setEditData((prev: typeof DEFAULT_IMT_CHECKLISTS) => prev.map((r, i) => i === idx ? { ...r, tasks } : r));
+  }
+
+  function removeRole(idx: number) {
+    setEditData((prev: typeof DEFAULT_IMT_CHECKLISTS) => prev.filter((_: unknown, i: number) => i !== idx));
+  }
+
+  const smChecked = SM_CHECKLIST.filter(i => checklist[i.key]).length;
+
+  return (
+    <div className="space-y-4">
+      {/* SM Checklist */}
+      <div className="bg-white rounded-xl shadow p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-gray-800">SM Checklist ({smChecked}/{SM_CHECKLIST.length})</h3>
+          <button onClick={() => {
+            const allDone = SM_CHECKLIST.every(i => checklist[i.key]);
+            const next: Record<string, boolean> = {};
+            if (!allDone) SM_CHECKLIST.forEach(i => { next[i.key] = true; });
+            setChecklist(next);
+            localStorage.setItem(clKey, JSON.stringify(next));
+          }} className="text-xs text-gray-400 hover:underline">
+            {SM_CHECKLIST.every(i => checklist[i.key]) ? 'Clear all' : 'Check all'}
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {SM_CHECKLIST.map(item => (
+            <label key={item.key} className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-gray-50">
+              <input type="checkbox" checked={!!checklist[item.key]} onChange={e => setCheck(item.key, e.target.checked)}
+                className="w-4 h-4 accent-green-600 shrink-0" />
+              <span className={`text-sm ${checklist[item.key] ? 'line-through text-gray-400' : 'text-gray-700'}`}>{item.label}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {/* Role checklists */}
+      {!editMode ? (
+        <>
+          <div className="flex justify-end">
+            <button onClick={() => { setEditData(JSON.parse(JSON.stringify(checklists))); setEditMode(true); }}
+              className="text-xs text-blue-600 hover:underline">Edit checklists</button>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {checklists.map((cl, idx) => (
+              <RoleTrack key={idx} title={cl.title} color={cl.color} tasks={cl.tasks} opId={op.id} />
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="bg-white rounded-xl shadow p-5 space-y-4">
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="font-bold text-gray-800">Edit IMT Checklists</h3>
+            <div className="flex gap-2">
+              <button onClick={() => setEditMode(false)} className="text-xs text-gray-500 hover:underline">Cancel</button>
+              <button onClick={saveEdits} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-semibold hover:bg-blue-700">Save</button>
+            </div>
+          </div>
+          {editData.map((cl: { title: string; color: string; tasks: string[] }, idx: number) => (
+            <div key={idx} className="border border-gray-200 rounded-xl p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <input type="color" value={cl.color}
+                  onChange={e => updateRole(idx, 'color', e.target.value)}
+                  className="w-8 h-8 rounded border border-gray-200 cursor-pointer shrink-0" />
+                <input value={cl.title} onChange={e => updateRole(idx, 'title', e.target.value)}
+                  className="flex-1 border border-gray-300 rounded px-2 py-1 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <button onClick={() => removeRole(idx)} className="text-red-400 hover:text-red-600 text-sm px-1">✕</button>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Tasks (one per line)</label>
+                <textarea
+                  value={cl.tasks.join('\n')}
+                  onChange={e => updateTasks(idx, e.target.value)}
+                  rows={Math.max(3, cl.tasks.length + 1)}
+                  className="w-full border border-gray-200 rounded px-2 py-1.5 text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+          ))}
+          <button onClick={addRole}
+            className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors">
+            + Add Role
+          </button>
+          <button onClick={() => { setEditData(JSON.parse(JSON.stringify(DEFAULT_IMT_CHECKLISTS))); }}
+            className="text-xs text-gray-400 hover:underline">Reset to defaults</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Operation Details tab ─────────────────────────────────────────────────────
+
+function OperationDetailsTab({ op, onUpdated, elapsedLabel, caltopoUrl, ippLat, ippLon, hasCoords }: {
+  op: Operation;
+  onUpdated: (op: Operation) => void;
+  elapsedLabel: string;
+  caltopoUrl: string;
+  ippLat: number;
+  ippLon: number;
+  hasCoords: boolean;
+}) {
+  const [section, setSection] = useState<'lpb' | 'smeac' | 'sarab' | 'news'>('lpb');
+
+  const sections = [
+    { id: 'lpb',   label: 'Lost Person Behaviour' },
+    { id: 'smeac', label: 'SMEAC Briefing' },
+    { id: 'sarab', label: 'SAR AB Response' },
+    { id: 'news',  label: 'Local News' },
+  ] as const;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setSection(s.id)}
+            className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${section === s.id ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+      {section === 'lpb'   && <LPBPanel op={op} onUpdated={onUpdated} elapsedLabel={elapsedLabel} />}
+      {section === 'smeac' && <SMEACPanel op={op} elapsedLabel={elapsedLabel} caltopoUrl={caltopoUrl} />}
+      {section === 'sarab' && <SARABPanel lat={ippLat} lon={ippLon} hasCoords={hasCoords} />}
+      {section === 'news'  && <LocalNewsPanel op={op} />}
     </div>
   );
 }

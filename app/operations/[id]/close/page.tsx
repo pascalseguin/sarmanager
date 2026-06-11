@@ -3,6 +3,7 @@
 import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useSettings } from '@/lib/settings-context';
 
 interface Operation {
   id: string; name: string; status: string; started_at: string; ended_at?: string;
@@ -33,6 +34,7 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
   const { id } = use(params);
   const router = useRouter();
   const { user, loading, authFetch } = useAuth();
+  const { settings } = useSettings();
 
   const [op, setOp] = useState<Operation | null>(null);
   const [personnel, setPersonnel] = useState<Personnel[]>([]);
@@ -188,7 +190,7 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
 
     const header = (title: string) => [
       `════════════════════════════════════════════════════════════════`,
-      `  SEASAR ${title}`,
+      `  ${settings.orgName} ${title}`,
       `════════════════════════════════════════════════════════════════`,
       `  Incident Name: ${op.name.padEnd(28)} Date: ${dateStr}   Time: ${timeStr}`,
       `  D4H#: ${(op.d4h_incident_id ?? '___________').padEnd(20)}`,
@@ -196,7 +198,7 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
       `  Completed by: ${(incidentCommander || '_______________').padEnd(24)} Number: _______________`,
       `  Agency: ${(op.tasking_agency ?? '_______________').padEnd(26)} Contact: ${op.oic_name ?? '_______________'}`,
       `  Agency Phone: ${(op.oic_phone ?? '_______________').padEnd(22)} Operational Period: 10 hrs`,
-      `  SEASAR IC: ${(incidentCommander || '_______________').padEnd(24)} Planning: ${(planningChief || '_______________').padEnd(18)} Ops: ${opsChief || '_______________'}`,
+      `  ${settings.orgName} IC: ${(incidentCommander || '_______________').padEnd(24)} Planning: ${(planningChief || '_______________').padEnd(18)} Ops: ${opsChief || '_______________'}`,
       ``,
     ].join('\n');
 
@@ -304,7 +306,7 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
     const support = checkins.filter(c => !c.fit_for_field);
     const drivers = checkins.filter(c => c.vehicle_role === 'driver');
     return [
-      `SEASAR TURN-OUT RECORD`,
+      `${settings.orgName} TURN-OUT RECORD`,
       `Incident: ${op.name}`,
       `Activation: ${fmt(op.deploy_timestamp)}`,
       `D4H Incident: ${op.d4h_incident_id ?? 'N/A'}`,
@@ -330,21 +332,21 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  if (loading || !user || fetching) return <div className="min-h-screen bg-gray-100 flex items-center justify-center"><p className="text-gray-500">Loading…</p></div>;
-  if (!op) return <div className="min-h-screen bg-gray-100 flex items-center justify-center"><p className="text-red-500">Operation not found.</p></div>;
-  if (closed) return <div className="min-h-screen bg-gray-100 flex items-center justify-center"><p className="text-green-600 font-semibold">Operation closed. Returning…</p></div>;
+  if (loading || !user || fetching) return <div className="app-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><p style={{ color: 'var(--text-muted)' }}>Loading…</p></div>;
+  if (!op) return <div className="app-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><p style={{ color: 'var(--danger)' }}>Operation not found.</p></div>;
+  if (closed) return <div className="app-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><p style={{ color: 'var(--success)', fontWeight: 600 }}>Operation closed. Returning…</p></div>;
 
   const DOCS = [
-    { id: 'fn1', label: 'SEASAR First Notice (Person + Briefing)', fn: seasarFirstNotice },
+    { id: 'fn1', label: `${settings.orgName} First Notice (Person + Briefing)`, fn: seasarFirstNotice },
     { id: 'ics201', label: 'ICS 201 — Incident Briefing', fn: ics201 },
     { id: 'ics204', label: 'ICS 204 — Assignment List', fn: ics204 },
     { id: 'ics211', label: 'ICS 211 — Check-In List', fn: ics211 },
-    { id: 'turnout', label: 'SEASAR Turn-Out Record', fn: turnout },
+    { id: 'turnout', label: `${settings.orgName} Turn-Out Record`, fn: turnout },
   ] as const;
 
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
-      <div className="max-w-3xl mx-auto space-y-4">
+    <div className="app-content panel">
+      <div style={{ maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 }}>
 
         {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-sm text-gray-500">

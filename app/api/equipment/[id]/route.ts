@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { requireSM, isNextResponse } from '@/lib/auth-server';
 
-const ALLOWED = ['name','brand','model','serial','barcode','ref','type','category','location','container','status','deployable','notes','tag'];
+const ALLOWED = ['name','brand','model','serial','barcode','ref','type','category','location','container','status','deployable','notes','tag','custom_tags'];
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const result = requireSM(req);

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 import { requireSM, isNextResponse } from '@/lib/auth-server';
 
-const ALLOWED = ['name','role','status','qualifications','contact','phone','notes'];
+const ALLOWED = ['name','role','status','qualifications','contact','phone','notes','member_status'];
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const result = requireSM(req);

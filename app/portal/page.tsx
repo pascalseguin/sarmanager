@@ -2,11 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-// ── SAR Qualifications ────────────────────────────────────────────────────────
-const SAR_QUALS = ['Ground','Medical-FR','Medical-EMT','Medical-Paramedic','Rope-Basic','Rope-Advanced',
-  'Swiftwater','ATV','Snowmobile','Canine','Drone/UAS','Mountain','Navigator','Radio Op','IC','Plans','Logistics','Driver'];
-
-// ── QR helpers ────────────────────────────────────────────────────────────────
 function QRCanvas({ payload, size = 180 }: { payload: string; size?: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -18,16 +13,34 @@ function QRCanvas({ payload, size = 180 }: { payload: string; size?: number }) {
   return <canvas ref={ref} />;
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+function WeatherWidget({ lat, lon }: { lat: number; lon: number }) {
+  const [data, setData] = useState<Record<string, any> | null>(null);
+  useEffect(() => {
+    fetch(`/api/weather?lat=${lat}&lon=${lon}`).then(r => r.json()).then(setData).catch(() => {});
+  }, [lat, lon]);
+  if (!data?.conditions) return <p style={{ fontSize: 13, color: '#6b7280' }}>Loading weather…</p>;
+  const c = data.conditions as Record<string, any>;
+  return (
+    <p style={{ fontSize: 13, color: '#374151' }}>
+      <strong>{c.description}</strong>
+      {c.tempC != null && ` · ${c.tempC.toFixed(1)}°C`}
+      {c.windSpeedKmh != null && ` · ${c.windDirection ?? ''} ${c.windSpeedKmh} km/h`}
+    </p>
+  );
+}
+
 interface AuthResult {
   personnelId: string; name: string; qualifications: string[];
   contact: string; onCallEndsAt: string | null; d4hMemberId: number | null;
 }
 
-interface TaskAssignment {
-  id: string; name: string; task_number?: string; status: string;
-  current_assignment?: string; planned_tasks?: string;
-  assignments: { name: string; is_team_leader: number }[];
+interface DashboardData {
+  operation: { name: string; status: string; startedAt: string; departureTime: string | null };
+  teamAssignment: { taskName: string; description: string; status: string; is_team_leader: number } | null;
+  caltopoUrl: string | null;
+  smeac: string;
+  ippLat: number | null;
+  ippLon: number | null;
 }
 
 interface LocalEquipment {
@@ -38,32 +51,37 @@ interface LocalEquipment {
 export default function PortalPage() {
   const [tab, setTab] = useState<'profile' | 'team' | 'equipment'>('profile');
   const [auth, setAuth] = useState<AuthResult | null>(null);
+  const [allQuals, setAllQuals] = useState<string[]>([]);
+  useEffect(() => {
+    fetch('/api/quals').then(r => r.json()).then(d => setAllQuals(d.all ?? [])).catch(() => {});
+  }, []);
 
-  // Auth form state
+  // Auth form
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName]   = useState('');
   const [phone, setPhone]         = useState('');
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Profile edit state
-  const [displayName, setDisplayName]             = useState('');
-  const [editPhone, setEditPhone]                 = useState('');
-  const [emergencyContact, setEmergencyContact]   = useState('');
-  const [quals, setQuals]                         = useState<string[]>([]);
-  const [profileSaving, setProfileSaving]         = useState(false);
-  const [profileMsg, setProfileMsg]               = useState('');
+  // Profile
+  const [displayName, setDisplayName]           = useState('');
+  const [editPhone, setEditPhone]               = useState('');
+  const [emergencyContact, setEmergencyContact] = useState('');
+  const [quals, setQuals]                       = useState<string[]>([]);
+  const [profileSaving, setProfileSaving]       = useState(false);
+  const [profileMsg, setProfileMsg]             = useState('');
 
-  // Team state
-  const [activeOps, setActiveOps]   = useState<{ id: string; name: string }[]>([]);
-  const [selectedOp, setSelectedOp] = useState('');
-  const [myTeam, setMyTeam]         = useState<TaskAssignment | null>(null);
-  const [teamLoading, setTeamLoading] = useState(false);
-  const [teamMsg, setTeamMsg]       = useState('');
+  // Team / dashboard
+  const [activeOps, setActiveOps]         = useState<{ id: string; name: string }[]>([]);
+  const [selectedOp, setSelectedOp]       = useState('');
+  const [dashboard, setDashboard]         = useState<DashboardData | null>(null);
+  const [dashLoading, setDashLoading]     = useState(false);
+  const [dashMsg, setDashMsg]             = useState('');
+  const [copiedSmeac, setCopiedSmeac]     = useState(false);
 
-  // Equipment state
-  const [equipment, setEquipment]   = useState<LocalEquipment[]>([]);
-  const [eqLoading, setEqLoading]   = useState(false);
+  // Equipment
+  const [equipment, setEquipment] = useState<LocalEquipment[]>([]);
+  const [eqLoading, setEqLoading] = useState(false);
 
   const qrPayload = auth ? `sar1|${displayName || auth.name}|${quals.join(',')}|${editPhone}` : '';
 
@@ -71,28 +89,28 @@ export default function PortalPage() {
     e.preventDefault();
     setAuthLoading(true); setAuthError('');
     try {
-      // We need an active operation to auth against — find first active op
       const opsRes = await fetch('/api/operations');
       const opsData = await opsRes.json();
-      const activeOp = (opsData.operations ?? []).find((o: any) => o.status === 'active');
-      const operationId = activeOp?.id;
+      const ops = (opsData.operations ?? []).filter((o: any) => o.status === 'active');
+      const activeOp = ops[0];
 
       const res = await fetch('/api/checkin/auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ firstName, lastName, phone, operationId }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName, lastName, phone, operationId: activeOp?.id }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Authentication failed');
-
       setAuth(data);
       setDisplayName(data.name);
       setEditPhone(phone);
       setQuals(data.qualifications ?? []);
-      setActiveOps((opsData.operations ?? []).filter((o: any) => o.status === 'active').map((o: any) => ({ id: o.id, name: o.name })));
-      if (operationId) setSelectedOp(operationId);
-    } catch (e: unknown) { setAuthError(e instanceof Error ? e.message : 'Authentication failed'); }
-    finally { setAuthLoading(false); }
+      setActiveOps(ops.map((o: any) => ({ id: o.id, name: o.name })));
+      if (activeOp) setSelectedOp(activeOp.id);
+    } catch (e: unknown) {
+      setAuthError(e instanceof Error ? e.message : 'Authentication failed');
+    } finally {
+      setAuthLoading(false);
+    }
   }
 
   async function saveProfile(e: React.FormEvent) {
@@ -101,20 +119,17 @@ export default function PortalPage() {
     setProfileSaving(true); setProfileMsg('');
     try {
       const res = await fetch(`/api/personnel/${auth.personnelId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: displayName.trim() || auth.name,
-          phone: editPhone.trim(),
-          contact: emergencyContact.trim(),
-          qualifications: quals.join(', '),
-        }),
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: displayName.trim() || auth.name, phone: editPhone.trim(), contact: emergencyContact.trim(), qualifications: quals.join(', ') }),
       });
       if (!res.ok) throw new Error('Failed to save');
       setProfileMsg('Profile saved.');
       setTimeout(() => setProfileMsg(''), 3000);
-    } catch (e: unknown) { setProfileMsg(e instanceof Error ? e.message : 'Save failed'); }
-    finally { setProfileSaving(false); }
+    } catch (e: unknown) {
+      setProfileMsg(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setProfileSaving(false);
+    }
   }
 
   async function downloadQR() {
@@ -126,22 +141,21 @@ export default function PortalPage() {
     a.click();
   }
 
-  const loadTeam = useCallback(async (opId: string) => {
+  const loadDashboard = useCallback(async (opId: string) => {
     if (!auth || !opId) return;
-    setTeamLoading(true); setTeamMsg('');
+    setDashLoading(true); setDashMsg('');
     try {
-      const res = await fetch(`/api/tasks?operation_id=${opId}`);
+      const res = await fetch(`/api/checkin/dashboard?operationId=${opId}&personnelId=${auth.personnelId}`);
       const data = await res.json();
-      const tasks: TaskAssignment[] = data.tasks ?? [];
-      const myName = (displayName || auth.name).toLowerCase();
-      const assigned = tasks.find(t =>
-        t.assignments.some(a => a.name.toLowerCase() === myName)
-      );
-      setMyTeam(assigned ?? null);
-      if (!assigned) setTeamMsg('You are not assigned to a team yet for this operation.');
-    } catch { setTeamMsg('Failed to load team info.'); }
-    finally { setTeamLoading(false); }
-  }, [auth, displayName]);
+      if (!res.ok) throw new Error(data.error ?? 'Failed');
+      setDashboard(data);
+      if (!data.teamAssignment) setDashMsg('You are not assigned to a team yet. Check with the SM.');
+    } catch (e: unknown) {
+      setDashMsg(e instanceof Error ? e.message : 'Failed to load team info.');
+    } finally {
+      setDashLoading(false);
+    }
+  }, [auth]);
 
   async function loadEquipment() {
     setEqLoading(true);
@@ -153,39 +167,40 @@ export default function PortalPage() {
     finally { setEqLoading(false); }
   }
 
-  useEffect(() => { if (auth && selectedOp) loadTeam(selectedOp); }, [auth, selectedOp]);
+  useEffect(() => { if (auth && selectedOp) loadDashboard(selectedOp); }, [auth, selectedOp]);
   useEffect(() => { if (auth && tab === 'equipment') loadEquipment(); }, [auth, tab]);
 
-  // ── Not authenticated ─────────────────────────────────────────────────────
+  // ── Styles (light theme — public-facing mobile page) ─────────────────────
+  const card: React.CSSProperties = { background: '#fff', borderRadius: 12, boxShadow: '0 1px 4px rgba(0,0,0,0.08)', padding: 20, marginBottom: 0 };
+  const labelStyle: React.CSSProperties = { display: 'block', fontSize: 11, fontWeight: 600, color: '#6b7280', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.3px' };
+  const inputStyle: React.CSSProperties = { width: '100%', padding: '9px 12px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 14, outline: 'none', boxSizing: 'border-box' };
+  const btnPrimary: React.CSSProperties = { width: '100%', padding: '12px', background: '#2563eb', color: '#fff', borderRadius: 8, fontWeight: 700, fontSize: 14, border: 'none', cursor: 'pointer' };
+
+  // ── Not authenticated ──────────────────────────────────────────────────────
   if (!auth) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-2xl shadow-lg p-8 w-full max-w-sm">
-          <h1 className="text-2xl font-bold text-gray-900 mb-1">SAR Searcher Portal</h1>
-          <p className="text-sm text-gray-500 mb-6">Enter your name and phone number to continue.</p>
-          <form onSubmit={handleAuth} className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+      <div style={{ minHeight: '100vh', background: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+        <div style={{ ...card, width: '100%', maxWidth: 360, padding: '36px 32px' }}>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: '#111827', marginBottom: 4 }}>SAR Searcher Portal</h1>
+          <p style={{ fontSize: 13, color: '#6b7280', marginBottom: 24 }}>Enter your name and phone number to continue.</p>
+          <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">First Name</label>
-                <input required value={firstName} onChange={e => setFirstName(e.target.value)}
-                  className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <label style={labelStyle}>First Name</label>
+                <input required value={firstName} onChange={e => setFirstName(e.target.value)} autoComplete="given-name" style={inputStyle} />
               </div>
               <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Last Name</label>
-                <input required value={lastName} onChange={e => setLastName(e.target.value)}
-                  className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <label style={labelStyle}>Last Name</label>
+                <input required value={lastName} onChange={e => setLastName(e.target.value)} autoComplete="family-name" style={inputStyle} />
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Phone Number</label>
-              <input required type="tel" value={phone} onChange={e => setPhone(e.target.value)}
-                placeholder="403-555-0100"
-                className="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <label style={labelStyle}>Phone Number</label>
+              <input required type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="403-555-0100" autoComplete="tel" style={inputStyle} />
             </div>
-            {authError && <p className="text-sm text-red-600">{authError}</p>}
-            <button type="submit" disabled={authLoading}
-              className="w-full py-2.5 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
-              {authLoading ? 'Authenticating…' : 'Sign In'}
+            {authError && <p style={{ fontSize: 13, color: '#dc2626' }}>{authError}</p>}
+            <button type="submit" disabled={authLoading} style={{ ...btnPrimary, opacity: authLoading ? 0.6 : 1 }}>
+              {authLoading ? 'Authenticating…' : 'Sign In →'}
             </button>
           </form>
         </div>
@@ -194,96 +209,96 @@ export default function PortalPage() {
   }
 
   // ── Authenticated ─────────────────────────────────────────────────────────
+  const teamName = dashboard?.teamAssignment?.taskName;
+
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div style={{ minHeight: '100vh', background: '#f3f4f6' }}>
       {/* Header */}
-      <div className="bg-white border-b shadow-sm px-4 py-3 flex items-center justify-between">
+      <div style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 10 }}>
         <div>
-          <div className="font-bold text-gray-900">SAR Searcher Portal</div>
-          <div className="text-xs text-gray-500">{auth.name}</div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: '#111827' }}>SAR Searcher Portal</div>
+          <div style={{ fontSize: 12, color: '#6b7280' }}>{auth.name}</div>
         </div>
-        <div className="flex items-center gap-3">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {auth.onCallEndsAt && (
-            <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-medium">
+            <span style={{ fontSize: 11, background: '#d1fae5', color: '#065f46', padding: '3px 10px', borderRadius: 20, fontWeight: 600 }}>
               ON-CALL until {new Date(auth.onCallEndsAt).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit' })}
             </span>
           )}
-          <button onClick={() => setAuth(null)} className="text-sm text-gray-500 hover:text-gray-700">Sign out</button>
+          <button onClick={() => setAuth(null)} style={{ fontSize: 12, color: '#6b7280', background: 'none', border: 'none', cursor: 'pointer' }}>Sign out</button>
         </div>
       </div>
 
       {/* Tab bar */}
-      <div className="bg-white border-b flex">
+      <div style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', display: 'flex' }}>
         {([
-          { id: 'profile', label: 'My Profile' },
-          { id: 'team',    label: myTeam ? `My Team — ${myTeam.name}` : 'My Team' },
+          { id: 'profile',   label: 'My Profile' },
+          { id: 'team',      label: teamName ? `Team — ${teamName}` : 'My Team' },
           { id: 'equipment', label: 'Equipment' },
         ] as const).map(t => (
           <button key={t.id} onClick={() => setTab(t.id)}
-            className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors ${tab === t.id ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+            style={{ padding: '12px 20px', fontSize: 13, fontWeight: 500, border: 'none', borderBottom: `2px solid ${tab === t.id ? '#2563eb' : 'transparent'}`, color: tab === t.id ? '#2563eb' : '#6b7280', background: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
             {t.label}
           </button>
         ))}
       </div>
 
-      <div className="max-w-3xl mx-auto p-4">
+      <div style={{ maxWidth: 680, margin: '0 auto', padding: '16px 16px 40px' }}>
+
         {/* ── Profile tab ── */}
         {tab === 'profile' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white rounded-xl shadow p-5">
-              <h2 className="font-semibold text-gray-800 mb-4">My Profile</h2>
-              <form onSubmit={saveProfile} className="space-y-3">
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+            <div style={card}>
+              <h2 style={{ fontWeight: 700, fontSize: 15, marginBottom: 16, color: '#111827' }}>My Profile</h2>
+              <form onSubmit={saveProfile} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Display Name</label>
-                  <input value={displayName} onChange={e => setDisplayName(e.target.value)}
-                    className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <label style={labelStyle}>Display Name</label>
+                  <input value={displayName} onChange={e => setDisplayName(e.target.value)} style={inputStyle} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Phone</label>
-                  <input type="tel" value={editPhone} onChange={e => setEditPhone(e.target.value)}
-                    className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <label style={labelStyle}>Phone</label>
+                  <input type="tel" value={editPhone} onChange={e => setEditPhone(e.target.value)} style={inputStyle} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Emergency Contact</label>
-                  <input value={emergencyContact} onChange={e => setEmergencyContact(e.target.value)}
-                    placeholder="Name and phone number"
-                    className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <label style={labelStyle}>Emergency Contact</label>
+                  <input value={emergencyContact} onChange={e => setEmergencyContact(e.target.value)} placeholder="Name and phone" style={inputStyle} />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-2">Qualifications</label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {SAR_QUALS.map(q => {
+                  <label style={labelStyle}>Qualifications</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                    {allQuals.map(q => {
                       const on = quals.includes(q);
                       return (
                         <button key={q} type="button" onClick={() => setQuals(prev => on ? prev.filter(x => x !== q) : [...prev, q])}
-                          className={`px-2 py-0.5 rounded text-xs border transition-colors ${on ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:border-blue-400'}`}>
+                          style={{ padding: '3px 10px', borderRadius: 12, fontSize: 12, border: `1px solid ${on ? '#2563eb' : '#d1d5db'}`, background: on ? '#dbeafe' : 'transparent', color: on ? '#1d4ed8' : '#6b7280', cursor: 'pointer' }}>
                           {q}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-                {profileMsg && <p className={`text-sm ${profileMsg.includes('failed') || profileMsg.includes('Failed') ? 'text-red-600' : 'text-green-600'}`}>{profileMsg}</p>}
-                <button type="submit" disabled={profileSaving}
-                  className="w-full py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50">
+                {profileMsg && (
+                  <p style={{ fontSize: 13, color: profileMsg.includes('fail') || profileMsg.includes('Fail') ? '#dc2626' : '#059669' }}>{profileMsg}</p>
+                )}
+                <button type="submit" disabled={profileSaving} style={{ ...btnPrimary, opacity: profileSaving ? 0.6 : 1 }}>
                   {profileSaving ? 'Saving…' : 'Save Profile'}
                 </button>
               </form>
             </div>
 
             {/* QR Card */}
-            <div className="bg-white rounded-xl shadow p-5 flex flex-col items-center">
-              <h2 className="font-semibold text-gray-800 mb-4 self-start">My QR Card</h2>
-              <div className="bg-white p-4 rounded-xl shadow-md border text-center mb-3">
+            <div style={{ ...card, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+              <h2 style={{ fontWeight: 700, fontSize: 15, marginBottom: 16, color: '#111827', alignSelf: 'flex-start' }}>My QR Card</h2>
+              <div style={{ background: '#fff', padding: 16, borderRadius: 12, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', border: '1px solid #e5e7eb', textAlign: 'center', marginBottom: 12 }}>
                 <QRCanvas payload={qrPayload} size={160} />
-                <div className="font-bold text-gray-900 mt-2 text-sm">{displayName || auth.name}</div>
-                <div className="text-xs text-gray-500 mt-0.5">{quals.join(' · ') || 'No quals set'}</div>
+                <div style={{ fontWeight: 700, color: '#111827', marginTop: 8, fontSize: 14 }}>{displayName || auth.name}</div>
+                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>{quals.join(' · ') || 'No quals set'}</div>
               </div>
               <button onClick={downloadQR}
-                className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-700 hover:bg-gray-50 transition-colors">
+                style={{ padding: '8px 20px', border: '1px solid #d1d5db', borderRadius: 8, fontSize: 13, color: '#374151', background: '#fff', cursor: 'pointer' }}>
                 Download PNG
               </button>
-              <p className="text-xs text-gray-400 mt-2 text-center max-w-48">
+              <p style={{ fontSize: 11, color: '#9ca3af', marginTop: 8, textAlign: 'center', maxWidth: 200 }}>
                 Show to the Search Manager to check in via QR scan
               </p>
             </div>
@@ -292,124 +307,139 @@ export default function PortalPage() {
 
         {/* ── Team tab ── */}
         {tab === 'team' && (
-          <div className="space-y-4">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {activeOps.length > 1 && (
-              <div className="bg-white rounded-xl shadow p-4 flex items-center gap-3">
-                <label className="text-sm font-medium text-gray-700">Active Operation:</label>
-                <select value={selectedOp} onChange={e => setSelectedOp(e.target.value)}
-                  className="flex-1 border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  {activeOps.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
-                </select>
-                <button onClick={() => loadTeam(selectedOp)} className="text-xs text-blue-500 hover:underline">Refresh</button>
-              </div>
-            )}
-
-            {teamLoading && <div className="text-center text-gray-500 py-8">Loading team assignment…</div>}
-            {teamMsg && !myTeam && (
-              <div className="bg-white rounded-xl shadow p-6 text-center">
-                <p className="text-gray-500 text-sm">{teamMsg}</p>
-                <p className="text-xs text-gray-400 mt-2">The Search Manager assigns teams from the Operations board. Check back after teams are built.</p>
-                <button onClick={() => loadTeam(selectedOp)} className="mt-3 text-sm text-blue-600 hover:underline">Refresh</button>
-              </div>
-            )}
-
-            {myTeam && !teamLoading && (
-              <div className="bg-white rounded-xl shadow p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="font-bold text-xl text-gray-900">{myTeam.name}</h2>
-                  <div className="flex items-center gap-2">
-                    {myTeam.task_number && <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded font-mono">{myTeam.task_number}</span>}
-                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${myTeam.status === 'deployed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                      {myTeam.status}
-                    </span>
-                    <button onClick={() => loadTeam(selectedOp)} className="text-xs text-gray-400 hover:underline">↺</button>
-                  </div>
+              <div style={{ ...card }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <label style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Operation:</label>
+                  <select value={selectedOp} onChange={e => setSelectedOp(e.target.value)}
+                    style={{ flex: 1, padding: '6px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13 }}>
+                    {activeOps.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                  <button onClick={() => loadDashboard(selectedOp)} style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}>↺</button>
                 </div>
+              </div>
+            )}
 
-                {myTeam.current_assignment && (
-                  <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <div className="text-xs font-bold text-blue-600 uppercase tracking-wide mb-1">Current Assignment</div>
-                    <div className="text-sm font-semibold text-blue-900">{myTeam.current_assignment}</div>
-                  </div>
-                )}
+            {dashLoading && <p style={{ textAlign: 'center', color: '#6b7280', padding: '32px 0', fontSize: 13 }}>Loading…</p>}
 
-                {myTeam.planned_tasks && (
-                  <div className="mb-4">
-                    <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Planned Assignments</div>
-                    <div className="text-sm text-gray-700">{myTeam.planned_tasks}</div>
-                  </div>
-                )}
+            {!dashLoading && dashMsg && !dashboard?.teamAssignment && (
+              <div style={card}>
+                <p style={{ fontSize: 13, color: '#6b7280', textAlign: 'center' }}>{dashMsg}</p>
+                <p style={{ fontSize: 12, color: '#9ca3af', textAlign: 'center', marginTop: 4 }}>The SM assigns teams from the Operations board. Check back after teams are built.</p>
+                <button onClick={() => loadDashboard(selectedOp)} style={{ display: 'block', margin: '10px auto 0', fontSize: 13, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}>↺ Refresh</button>
+              </div>
+            )}
 
-                <div>
-                  <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Team Members ({myTeam.assignments.length})</div>
-                  <div className="space-y-1">
-                    {myTeam.assignments.map(a => (
-                      <div key={a.name} className="flex items-center gap-2 text-sm">
-                        {a.is_team_leader ? <span className="text-yellow-500">★</span> : <span className="w-3" />}
-                        <span className={a.name.toLowerCase() === (displayName || auth.name).toLowerCase() ? 'font-bold text-blue-700' : 'text-gray-800'}>{a.name}</span>
-                        {a.is_team_leader && <span className="text-xs text-yellow-600">Team Lead</span>}
-                        {a.name.toLowerCase() === (displayName || auth.name).toLowerCase() && <span className="text-xs text-blue-600">(you)</span>}
+            {!dashLoading && dashboard && (
+              <>
+                {/* Team assignment */}
+                <div style={card}>
+                  <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#6b7280', marginBottom: 8 }}>Team Assignment</div>
+                  {dashboard.teamAssignment ? (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontWeight: 700, fontSize: 18, color: '#111827' }}>{dashboard.teamAssignment.taskName}</span>
+                        {dashboard.teamAssignment.is_team_leader === 1 && (
+                          <span style={{ fontSize: 11, background: '#2563eb', color: '#fff', padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>Team Leader</span>
+                        )}
+                        <span style={{ fontSize: 11, padding: '2px 8px', borderRadius: 10, fontWeight: 600, background: dashboard.teamAssignment.status === 'deployed' ? '#d1fae5' : '#fef3c7', color: dashboard.teamAssignment.status === 'deployed' ? '#065f46' : '#92400e' }}>
+                          {dashboard.teamAssignment.status}
+                        </span>
                       </div>
-                    ))}
-                  </div>
+                      {dashboard.teamAssignment.description && (
+                        <p style={{ fontSize: 13, color: '#374151' }}>{dashboard.teamAssignment.description}</p>
+                      )}
+                    </>
+                  ) : (
+                    <p style={{ fontSize: 13, color: '#6b7280' }}>Not yet assigned to a team. Check with your SM.</p>
+                  )}
                 </div>
 
-                <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-xs font-semibold text-red-700">
+                {/* CalTopo */}
+                {dashboard.caltopoUrl && (
+                  <div style={card}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#6b7280', marginBottom: 8 }}>🗺 Map</div>
+                    <a href={dashboard.caltopoUrl} target="_blank" rel="noreferrer"
+                      style={{ display: 'inline-block', padding: '8px 18px', background: '#2563eb', color: '#fff', borderRadius: 8, fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
+                      Open CalTopo Map ↗
+                    </a>
+                  </div>
+                )}
+
+                {/* Weather */}
+                {dashboard.ippLat != null && dashboard.ippLon != null && (
+                  <div style={card}>
+                    <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#6b7280', marginBottom: 8 }}>🌤 Weather at IPP</div>
+                    <WeatherWidget lat={dashboard.ippLat} lon={dashboard.ippLon} />
+                  </div>
+                )}
+
+                {/* SMEAC */}
+                {dashboard.smeac && (
+                  <div style={card}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.6px', color: '#6b7280' }}>📣 SMEAC Briefing</div>
+                      <button onClick={() => { navigator.clipboard.writeText(dashboard.smeac); setCopiedSmeac(true); setTimeout(() => setCopiedSmeac(false), 2500); }}
+                        style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}>
+                        {copiedSmeac ? '✓ Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    <pre style={{ fontSize: 12, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#374151', lineHeight: 1.5, margin: 0 }}>{dashboard.smeac}</pre>
+                  </div>
+                )}
+
+                {/* Safety reminder */}
+                <div style={{ ...card, background: '#fef2f2', border: '1px solid #fecaca' }}>
+                  <p style={{ fontSize: 12, fontWeight: 600, color: '#991b1b', margin: 0 }}>
                     Radio check every 60 minutes. Report to SM before entry and on exit from search area. Emergency: No Duff.
                   </p>
                 </div>
-              </div>
+              </>
             )}
           </div>
         )}
 
         {/* ── Equipment tab ── */}
         {tab === 'equipment' && (
-          <div className="space-y-4">
-            <div className="bg-white rounded-xl shadow p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold text-gray-800">Equipment Registry</h2>
-                <button onClick={loadEquipment} disabled={eqLoading} className="text-xs text-blue-500 hover:underline">
-                  {eqLoading ? '…' : '↺ Refresh'}
-                </button>
-              </div>
-              {eqLoading && <p className="text-sm text-gray-500">Loading equipment…</p>}
-              {!eqLoading && equipment.length === 0 && (
-                <p className="text-sm text-gray-500">No equipment in the registry. The Search Manager manages equipment from the Equipment page.</p>
-              )}
-              {!eqLoading && equipment.length > 0 && (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="text-xs text-gray-500 uppercase bg-gray-50 border-b">
-                      <tr>
-                        <th className="px-3 py-2 text-left">Name</th>
-                        <th className="px-3 py-2 text-left hidden sm:table-cell">Type</th>
-                        <th className="px-3 py-2 text-left hidden md:table-cell">Container</th>
-                        <th className="px-3 py-2 text-left">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {equipment.map((item, i) => (
-                        <tr key={item.id} className={`${i > 0 ? 'border-t border-gray-100' : ''} hover:bg-gray-50`}>
-                          <td className="px-3 py-2 font-medium text-gray-800">
-                            {item.name}
-                            {item.tag && <span className="ml-1 text-xs text-gray-400 font-mono">{item.tag}</span>}
-                          </td>
-                          <td className="px-3 py-2 text-gray-500 hidden sm:table-cell">{item.type ?? '—'}</td>
-                          <td className="px-3 py-2 text-gray-500 hidden md:table-cell">{item.container ?? '—'}</td>
-                          <td className="px-3 py-2">
-                            <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${item.status === 'available' ? 'bg-green-100 text-green-700' : item.status === 'deployed' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
-                              {item.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+          <div style={card}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <h2 style={{ fontWeight: 700, fontSize: 15, color: '#111827' }}>Equipment Registry</h2>
+              <button onClick={loadEquipment} disabled={eqLoading} style={{ fontSize: 12, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer' }}>
+                {eqLoading ? '…' : '↺ Refresh'}
+              </button>
             </div>
+            {eqLoading && <p style={{ fontSize: 13, color: '#6b7280' }}>Loading…</p>}
+            {!eqLoading && equipment.length === 0 && (
+              <p style={{ fontSize: 13, color: '#6b7280' }}>No equipment in the registry.</p>
+            )}
+            {!eqLoading && equipment.length > 0 && (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #e5e7eb' }}>
+                    <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase' }}>Name</th>
+                    <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase' }}>Type</th>
+                    <th style={{ textAlign: 'left', padding: '6px 8px', fontSize: 11, color: '#9ca3af', fontWeight: 600, textTransform: 'uppercase' }}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {equipment.map((item, i) => (
+                    <tr key={item.id} style={{ borderTop: i > 0 ? '1px solid #f3f4f6' : 'none' }}>
+                      <td style={{ padding: '8px 8px', fontWeight: 500, color: '#111827' }}>
+                        {item.name}
+                        {item.tag && <span style={{ marginLeft: 6, fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>{item.tag}</span>}
+                      </td>
+                      <td style={{ padding: '8px 8px', color: '#6b7280' }}>{item.type ?? '—'}</td>
+                      <td style={{ padding: '8px 8px' }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 10, background: item.status === 'available' ? '#d1fae5' : item.status === 'deployed' ? '#dbeafe' : '#f3f4f6', color: item.status === 'available' ? '#065f46' : item.status === 'deployed' ? '#1d4ed8' : '#6b7280' }}>
+                          {item.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         )}
       </div>

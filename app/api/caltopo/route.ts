@@ -164,9 +164,11 @@ export async function POST(req: NextRequest) {
     if (action === 'discoverFolders') {
       const url = `https://caltopo.com/api/v1/acct/${accountId}/since/0`;
       const data = await caltopoGet(url, credentialId, secret);
+      // CalTopo wraps the payload in data.result
+      const result = data?.result ?? data;
       const features: any[] = [
-        ...(Array.isArray(data?.features) ? data.features : []),
-        ...(Array.isArray(data?.accounts) ? data.accounts : []),
+        ...(Array.isArray(result?.features) ? result.features : []),
+        ...(Array.isArray(result?.accounts) ? result.accounts : []),
       ];
       const folders = features
         .filter((f: any) => f?.properties?.class === 'UserFolder')
@@ -194,6 +196,40 @@ export async function POST(req: NextRequest) {
       const folderId = data?.result?.id ?? data?.result?.properties?.id ?? data?.id;
       if (!folderId) throw new Error('CalTopo did not return a folder ID');
       return NextResponse.json({ folderId, title });
+    }
+
+    // ── Rename a map ─────────────────────────────────────────────────────────
+    if (action === 'renameMap') {
+      const { mapId, title } = body;
+      if (!mapId || !title) return NextResponse.json({ error: 'mapId and title required' }, { status: 400 });
+      const url = `https://caltopo.com/api/v1/map/${mapId}`;
+      await caltopoPost(url, credentialId, secret, { properties: { title } });
+      return NextResponse.json({ ok: true });
+    }
+
+    // ── Test credentials (verifies both read and write access) ───────────────
+    if (action === 'testCredentials') {
+      // Step 1: read — confirm accountId is reachable
+      const readUrl = `https://caltopo.com/api/v1/acct/${accountId}/since/0`;
+      const readData = await caltopoGet(readUrl, credentialId, secret);
+      const result = readData?.result ?? readData;
+      const teamName: string = result?.accounts?.[0]?.properties?.title
+        ?? result?.features?.find((f: any) => f?.properties?.class === 'Account')?.properties?.title
+        ?? accountId;
+      // Step 2: write — try creating a test map and immediately deleting it
+      const testUrl = `https://caltopo.com/api/v1/acct/${accountId}/CollaborativeMap`;
+      const testData = await caltopoPost(testUrl, credentialId, secret, {
+        properties: { title: '__sarmanager_test__', sharing: 'URL', mode: 'sar' },
+        state: { type: 'FeatureCollection', features: [] },
+      });
+      const testMapId: string | undefined = testData?.result?.id ?? testData?.id;
+      // Clean up the test map
+      if (testMapId) {
+        try {
+          await caltopoPost(`https://caltopo.com/api/v1/map/${testMapId}`, credentialId, secret, { deleted: true });
+        } catch { /* non-fatal */ }
+      }
+      return NextResponse.json({ ok: true, teamName, accountId });
     }
 
     logError('caltopo', `Unknown action: ${action}`);

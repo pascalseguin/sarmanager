@@ -65,3 +65,7 @@ next-env.d.ts
 
 # Claude Code local config
 .claude
+
+# Electron app worktrees and archives — large, not part of the Next.js codebase
+sarmanager.worktrees/
+sarmanager-archive-*/

@@ -29,6 +29,7 @@ const OP_FIELDS = [
   'caltopo_map_id','caltopo_map_url',
   'd4h_incident_id','d4h_exercise_id','d4h_activity_type','d4h_callout_id',
   'deploy_decision','deploy_timestamp','weather_snapshot',
+  'deployed_presets_json',
 ] as const;
 
 // GET /api/operations

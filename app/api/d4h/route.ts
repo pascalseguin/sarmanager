@@ -65,10 +65,44 @@ export async function POST(req: NextRequest) {
     if (action === 'getTeams') {
       const data = await d4hFetch(token, '/v3/whoami');
       const members: Array<{ owner?: { id?: number; name?: string; resourceType?: string } }> = data?.members ?? [];
-      const teams = members
+      const rawTeams = members
         .filter(m => m?.owner?.resourceType === 'Team')
-        .map(m => ({ id: m.owner!.id!, name: m.owner!.name ?? `Team ${m.owner!.id}` }));
+        .map(m => ({ id: m.owner!.id!, name: m.owner!.name as string | undefined }));
+
+      // For teams where /v3/whoami returned no name, fetch it directly
+      const teams = await Promise.all(rawTeams.map(async (t) => {
+        if (t.name) return { id: t.id, name: t.name, logo: null as string | null };
+        try {
+          const td = await d4hFetch(token, `/v3/team/${t.id}`);
+          const name: string = td?.data?.title ?? td?.title ?? td?.data?.name ?? td?.name ?? `Team ${t.id}`;
+          const logo: string | null = td?.data?.logo ?? td?.data?.logo_url ?? td?.data?.imageUrl ?? td?.logo ?? null;
+          return { id: t.id, name, logo };
+        } catch {
+          return { id: t.id, name: `Team ${t.id}`, logo: null };
+        }
+      }));
+
       return NextResponse.json({ teams });
+    }
+
+    // ── Get a single team's name (fallback for NavBar when getTeams finds no match) ──
+    if (action === 'getTeamInfo') {
+      const reqTeamId = body.teamId;
+      if (!reqTeamId) return NextResponse.json({ error: 'teamId required' }, { status: 400 });
+      // Try whoami first — look for this specific team
+      const whoami = await d4hFetch(token, '/v3/whoami').catch(() => null);
+      if (whoami) {
+        const members: Array<{ owner?: { id?: number; name?: string; resourceType?: string } }> = whoami?.members ?? [];
+        const match = members.find(m => String(m?.owner?.id) === String(reqTeamId) && m?.owner?.resourceType === 'Team');
+        if (match?.owner?.name) return NextResponse.json({ name: match.owner.name });
+        // Also try without resourceType filter in case it differs
+        const anyMatch = members.find(m => String(m?.owner?.id) === String(reqTeamId));
+        if (anyMatch?.owner?.name) return NextResponse.json({ name: anyMatch.owner.name });
+      }
+      // Fallback: try direct team endpoint
+      const teamData = await d4hFetch(token, `/v3/team/${reqTeamId}`).catch(() => null);
+      const name = teamData?.title ?? teamData?.name ?? teamData?.data?.title ?? teamData?.data?.name ?? null;
+      return NextResponse.json({ name });
     }
 
     // ── Test connection ───────────────────────────────────────────────────────
@@ -122,6 +156,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ incident: data?.data ?? data });
     }
 
+    // ── Update exercise ───────────────────────────────────────────────────────
+    if (action === 'updateExercise') {
+      const { exerciseId, title, description } = body;
+      const teamId = await getTeamId(token, teamIdOverride);
+      const payload: Record<string, unknown> = {};
+      if (title !== undefined)       payload.title = title;
+      if (description !== undefined) payload.description = description;
+      const data = await d4hFetch(token, `/v3/team/${teamId}/exercises/${exerciseId}`, 'PATCH', payload);
+      return NextResponse.json({ exercise: data?.data ?? data });
+    }
+
     // ── Post to whiteboard ────────────────────────────────────────────────────
     if (action === 'postWhiteboard') {
       const { title, content, pinned } = body;
@@ -134,22 +179,85 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ noteId: data?.data?.id ?? data?.id });
     }
 
-    // ── Send callout (D4H duty callout → triggers Twilio SMS to team) ────────
+    // ── Send callout (D4H duty callout → triggers notifications to team) ────────
     if (action === 'sendCallout') {
       const { incidentId, message } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const payload: Record<string, unknown> = {};
       if (message) payload.message = String(message).slice(0, 150);
       if (incidentId) payload.activityId = Number(incidentId);
-      const data = await d4hFetch(token, `/v3/team/${teamId}/duty/callouts`, 'POST', payload);
+      // D4H v3: try duty-callouts (hyphenated) first; some instances use duty/callouts
+      let data: any = null;
+      try {
+        data = await d4hFetch(token, `/v3/team/${teamId}/duty-callouts`, 'POST', payload);
+      } catch {
+        data = await d4hFetch(token, `/v3/team/${teamId}/duty/callouts`, 'POST', payload);
+      }
       return NextResponse.json({ calloutId: data?.data?.id ?? data?.id ?? String(incidentId) });
     }
 
     // ── Get members ───────────────────────────────────────────────────────────
     if (action === 'getMembers') {
       const teamId = await getTeamId(token, teamIdOverride);
-      const data = await d4hFetch(token, `/v3/team/${teamId}/members?size=500`);
-      return NextResponse.json({ members: data?.data ?? data?.results ?? [] });
+
+      // Fetch members, custom status labels, and qual assignments in parallel
+      // Try member-qualifications; fall back to member-awards (different D4H orgs use different modules)
+      const [data, customStatusData, qualsData, awardsData] = await Promise.all([
+        d4hFetch(token, `/v3/team/${teamId}/members?size=500&status=OPERATIONAL,NON_OPERATIONAL`),
+        d4hFetch(token, `/v3/team/${teamId}/member-custom-statuses?size=100`).catch(() => ({ results: [] })),
+        d4hFetch(token, `/v3/team/${teamId}/member-qualifications?size=500`).catch(() => ({ results: [] })),
+        d4hFetch(token, `/v3/team/${teamId}/member-awards?size=500`).catch(() => ({ results: [] })),
+      ]);
+
+      const customStatuses: any[] = customStatusData?.results ?? customStatusData?.data ?? [];
+      const statusLabelMap = new Map<number, string>(customStatuses.map((s: any) => [s.id, s.title ?? s.label ?? '']));
+
+      // Merge qual assignments from both endpoints — both use same shape
+      function extractQualRows(raw: any): any[] {
+        return raw?.results ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+      }
+      const allQualRows = [...extractQualRows(qualsData), ...extractQualRows(awardsData)];
+
+      const memberQualsMap = new Map<number, string[]>();
+      for (const q of allQualRows) {
+        const memberId: number = q?.member?.id ?? q?.member_id;
+        // Many possible field structures across D4H versions
+        const qualTitle: string =
+          q?.qualification?.title ?? q?.award?.title ?? q?.title ?? q?.name ??
+          q?.qualification?.name ?? q?.award?.name ?? '';
+        const status: string = (q?.status ?? 'current').toLowerCase();
+        if (memberId && qualTitle && status !== 'expired' && status !== 'revoked' && status !== 'lapsed') {
+          const existing = memberQualsMap.get(memberId) ?? [];
+          if (!existing.includes(qualTitle)) memberQualsMap.set(memberId, [...existing, qualTitle]);
+        }
+      }
+
+      const list: any[] = data?.results ?? data?.data ?? (Array.isArray(data) ? data : []);
+      const members = list
+        .map((m: any) => {
+          // Also pull qualifications embedded directly on the member record (some D4H versions)
+          const inlineQuals: string[] = [
+            ...(Array.isArray(m.qualifications) ? m.qualifications : [])
+              .map((q: any) => (typeof q === 'string' ? q : q?.title ?? q?.name ?? '')).filter(Boolean),
+            ...(Array.isArray(m.awards) ? m.awards : [])
+              .map((a: any) => (typeof a === 'string' ? a : a?.title ?? a?.award?.title ?? a?.name ?? '')).filter(Boolean),
+          ];
+          const mapQuals = memberQualsMap.get(m.id) ?? [];
+          const quals = [...new Set([...mapQuals, ...inlineQuals])];
+          return {
+            id: m.id,
+            name: m.name || [m.givenName ?? m.firstName, m.surname ?? m.lastName].filter(Boolean).join(' ') || 'Unknown',
+            status: m.status ?? 'Unknown',
+            customStatusId: m.customStatus?.id ?? undefined,
+            customStatusTitle: m.customStatus?.id ? (statusLabelMap.get(m.customStatus.id) ?? undefined) : undefined,
+            phone: m.mobile?.phone ?? m.mobilePhone ?? m.home?.phone ?? m.homePhone ?? (typeof m.phone === 'string' ? m.phone : undefined),
+            group: m.group?.title ?? m.group?.name ?? undefined,
+            qualifications: quals,
+          };
+        })
+        .filter((m: any) => m.status === 'OPERATIONAL' || m.status === 'NON_OPERATIONAL');
+
+      return NextResponse.json({ members });
     }
 
     // ── Get callout responses (attendance for the incident activity) ──────────
@@ -157,7 +265,7 @@ export async function POST(req: NextRequest) {
       const { calloutId } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const data = await d4hFetch(token, `/v3/team/${teamId}/attendance?activity_id=${calloutId}&size=200`);
-      return NextResponse.json({ responses: data?.data ?? [] });
+      return NextResponse.json({ responses: data?.results ?? data?.data ?? [] });
     }
 
     // ── Post incident update (appends to whiteboard; no dedicated update endpoint in D4H v3) ──
@@ -174,7 +282,7 @@ export async function POST(req: NextRequest) {
     if (action === 'getEquipment') {
       const teamId = await getTeamId(token, teamIdOverride);
       const data = await d4hFetch(token, `/v3/team/${teamId}/equipment?size=200`);
-      const items = data?.data ?? data?.results ?? [];
+      const items = data?.results ?? data?.data ?? [];
       return NextResponse.json({ equipment: items });
     }
 
@@ -191,12 +299,12 @@ export async function POST(req: NextRequest) {
       const { equipmentId, notes, activityId, date } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const payload: Record<string, unknown> = {
-        equipment_item_id: Number(equipmentId),
+        equipmentItemId: Number(equipmentId),
         notes: notes ?? '',
         quantity: 1,
         date: date ?? new Date().toISOString(),
       };
-      if (activityId) payload.activity_id = Number(activityId);
+      if (activityId) payload.activityId = Number(activityId);
       const data = await d4hFetch(token, `/v3/team/${teamId}/equipment-usages`, 'POST', payload);
       return NextResponse.json({ usageId: data?.data?.id ?? data?.id, usage: data?.data ?? data });
     }
@@ -208,10 +316,10 @@ export async function POST(req: NextRequest) {
       const teamId = await getTeamId(token, teamIdOverride);
       const d4hStatus = String(status ?? '').toLowerCase().includes('un') ? 'UNSERVICEABLE' : 'OPERATIONAL';
       const payload: Record<string, unknown> = {
-        equipment_item_id: Number(equipmentId),
+        equipmentItemId: Number(equipmentId),
         status: d4hStatus,
         notes: notes ?? '',
-        inspected_at: new Date().toISOString(),
+        inspectedAt: new Date().toISOString(),
       };
       const data = await d4hFetch(token, `/v3/team/${teamId}/equipment-inspection-results`, 'POST', payload);
       return NextResponse.json({ resultId: data?.data?.id ?? data?.id, result: data?.data ?? data });
@@ -222,11 +330,11 @@ export async function POST(req: NextRequest) {
       const { equipmentId, title, description } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const data = await d4hFetch(token, `/v3/team/${teamId}/repairs`, 'POST', {
-        equipment_item_id: Number(equipmentId),
+        equipmentItemId: Number(equipmentId),
         title: title ?? 'Failed Inspection',
         description: description ?? 'Item flagged as unserviceable.',
         status: 'Awaiting Repair',
-        date_opened: new Date().toISOString(),
+        dateOpened: new Date().toISOString(),
       });
       return NextResponse.json({ repairId: data?.data?.id ?? data?.id, repair: data?.data ?? data });
     }
@@ -235,13 +343,19 @@ export async function POST(req: NextRequest) {
     if (action === 'getOnCall') {
       const teamId = await getTeamId(token, teamIdOverride);
       try {
-        const data = await d4hFetch(token, `/v3/team/${teamId}/duty-roster/on-call`);
-        const entries: any[] = data?.data ?? data?.results ?? [];
+        // Try the duty-roster endpoint; fall back to duty/shifts if not found
+        let data: any = null;
+        try {
+          data = await d4hFetch(token, `/v3/team/${teamId}/duty-roster?size=50`);
+        } catch {
+          data = await d4hFetch(token, `/v3/team/${teamId}/duty/roster?size=50`);
+        }
+        const entries: any[] = data?.results ?? data?.data ?? [];
         return NextResponse.json({
           onCall: entries.map((e: any) => ({
-            memberId: e.member?.id ?? e.member_id ?? e.id,
+            memberId: e.member?.id ?? e.memberId ?? e.member_id ?? e.id,
             name: e.member?.name ?? e.name,
-            endsAt: e.end_at ?? e.ends_at ?? null,
+            endsAt: e.endsAt ?? e.end_at ?? e.ends_at ?? null,
           })),
         });
       } catch { return NextResponse.json({ onCall: [] }); }
@@ -252,8 +366,9 @@ export async function POST(req: NextRequest) {
       const { memberId, activityId } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       try {
-        const data = await d4hFetch(token, `/v3/team/${teamId}/activities/${activityId}/attendees`, 'POST', {
-          member_id: Number(memberId),
+        const data = await d4hFetch(token, `/v3/team/${teamId}/attendance`, 'POST', {
+          memberId: Number(memberId),
+          activityId: Number(activityId),
           status: 'Attending',
         });
         return NextResponse.json({ attendanceId: data?.data?.id ?? data?.id ?? null });

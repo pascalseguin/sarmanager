@@ -3,9 +3,11 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useSettings } from '@/lib/settings-context';
 
 export default function LoginPage() {
   const { user, loading, login } = useAuth();
+  const { settings } = useSettings();
   const router = useRouter();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -33,50 +35,36 @@ export default function LoginPage() {
   if (loading) return null;
 
   return (
-    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-lg w-full max-w-sm p-8">
-        <div className="text-center mb-8">
-          <div className="text-3xl font-bold text-gray-900 mb-1">SAR Manager</div>
-          <div className="text-sm text-gray-500">SEASAR — Search &amp; Rescue</div>
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div style={{ width: 360, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: '44px 40px' }}>
+        <div style={{ textAlign: 'center', marginBottom: 36 }}>
+          <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--accent)', letterSpacing: '-1px', marginBottom: 4 }}>SAR Manager</div>
+          <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{settings.orgName} — Search &amp; Rescue</div>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
+            <label className="form-label">Username</label>
             <input
-              type="text"
-              value={username}
-              onChange={e => setUsername(e.target.value)}
+              type="text" value={username} onChange={e => setUsername(e.target.value)}
               autoComplete="username"
-              className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-              placeholder="admin"
+              style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }}
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <label className="form-label">Password</label>
             <input
-              type="password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
+              type="password" value={password} onChange={e => setPassword(e.target.value)}
               autoComplete="current-password"
-              className="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+              style={{ width: '100%', padding: '7px 10px', borderRadius: 6, border: '1px solid #d1d5db', fontSize: 13 }}
             />
           </div>
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors text-sm"
-          >
+          {error && <p style={{ fontSize: 13, color: 'var(--danger)', margin: 0 }}>{error}</p>}
+          <button type="submit" disabled={busy} className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: 4 }}>
             {busy ? 'Signing in…' : 'Sign In'}
           </button>
         </form>
 
-        <div className="mt-6 p-3 bg-gray-50 rounded-lg text-xs text-gray-500">
-          <div className="font-medium text-gray-600 mb-1">Default credentials</div>
-          <div>Username: <code className="font-mono">admin</code></div>
-          <div>Password: <code className="font-mono">admin123</code></div>
-        </div>
       </div>
     </div>
   );

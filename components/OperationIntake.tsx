@@ -3,28 +3,19 @@
 import { useState, useEffect } from 'react';
 import { Operation } from '@/lib/operations-store';
 import { parseUTMString, formatUTM } from '@/lib/utm';
-import { ISRID } from '@/lib/isrid';
+import { ISRID, circlePolygon } from '@/lib/isrid';
 import { useSettings } from '@/lib/settings-context';
 
-// ── Equipment preset helpers ──────────────────────────────────────────────────
-
-const PRESETS_KEY = 'sarmanager_eq_presets';
-
-function loadPresets(): Record<string, number[]> {
-  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) ?? '{}'); } catch { return {}; }
+interface DeploymentPreset {
+  id: string; name: string; description?: string;
+  items_json: string; equipment_ids_json: string; containers: string[];
 }
-function savePresets(p: Record<string, number[]>) {
-  localStorage.setItem(PRESETS_KEY, JSON.stringify(p));
-}
-
-interface D4HEqItem { id: number; title: string; ref?: string; category?: { title?: string } }
 
 interface Props {
   onCreated: (op: Operation) => void;
   onCancel?: () => void;
 }
 
-const AGENCIES = ['RCMP', 'MHPS', 'AHS', 'STARS', 'CJFR', 'Other'];
 
 const QUICK_TAGS = [
   'Missing Person', 'Lost Hiker', 'Overdue Vehicle', 'Overdue Hunter',
@@ -228,7 +219,7 @@ function blank() {
     safety_concerns: '',
     subject_category: '',
     name: '',
-    deployed_equipment_ids: [] as number[],
+    deployed_preset_ids: [] as string[],
     // D4H step
     d4h_activity_type: 'incident' as 'incident' | 'exercise',
     d4h_mode: 'create' as 'create' | 'link',
@@ -260,12 +251,21 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  // Equipment fetch (lazy — loads when SM reaches the equipment step)
-  const [equipment, setEquipment] = useState<D4HEqItem[]>([]);
-  const [eqLoading, setEqLoading] = useState(false);
-  const [eqError, setEqError] = useState('');
-  const [presets, setPresets] = useState<Record<string, number[]>>(loadPresets);
-  const [newPresetName, setNewPresetName] = useState('');
+  // ── Post-creation deploy wizard state ────────────────────────────────────
+  type RolloutStatus = 'idle' | 'running' | 'done' | 'error' | 'skipped';
+  const [createdOp, setCreatedOp] = useState<Operation | null>(null);
+  const [deployMode, setDeployMode] = useState<'decide' | 'deploy' | 'discuss'>('decide');
+  const [discussWhy, setDiscussWhy] = useState('');
+  const [rollout, setRollout] = useState<{
+    d4h: RolloutStatus; caltopo: RolloutStatus; sms: RolloutStatus; whiteboard: RolloutStatus;
+    errors: Record<string, string>; d4hId?: string; caltopoUrl?: string; smsCount: number; done: boolean;
+  }>({ d4h: 'idle', caltopo: 'idle', sms: 'idle', whiteboard: 'idle', errors: {}, smsCount: 0, done: false });
+  const [rolloutRunning, setRolloutRunning] = useState(false);
+
+  // Deployment presets (lazy — loads when SM reaches the equipment step)
+  const [availablePresets, setAvailablePresets] = useState<DeploymentPreset[]>([]);
+  const [presetsLoading, setPresetsLoading] = useState(false);
+  const [presetsError, setPresetsError] = useState('');
 
   // ── Auto-populate D4H fields when reaching step 6 ────────────────────────
   useEffect(() => {
@@ -292,52 +292,42 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
     }
   }, [step]);
 
-  // ── Load D4H equipment when reaching step 7 ───────────────────────────────
+  // ── Load deployment presets when reaching step 7 ─────────────────────────
   useEffect(() => {
-    if (step !== 7 || !settings.d4hToken || equipment.length > 0) return;
-    setEqLoading(true); setEqError('');
-    fetch('/api/d4h', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'getEquipment', token: settings.d4hToken }),
+    if (step !== 7 || availablePresets.length > 0) return;
+    setPresetsLoading(true); setPresetsError('');
+    const token = localStorage.getItem('sarmanager_session_token') ?? '';
+    fetch('/api/equipment/presets', {
+      headers: { Authorization: `Bearer ${token}` },
     })
       .then(r => r.json())
-      .then(d => setEquipment(d.equipment ?? []))
-      .catch(() => setEqError('Could not load equipment from D4H'))
-      .finally(() => setEqLoading(false));
-  }, [step]);
+      .then(d => setAvailablePresets(d.presets ?? []))
+      .catch(() => setPresetsError('Could not load deployment presets'))
+      .finally(() => setPresetsLoading(false));
+  }, [step, availablePresets.length]);
 
-  function toggleEquipment(id: number) {
-    const cur = form.deployed_equipment_ids;
-    set('deployed_equipment_ids', cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
-  }
-
-  function applyPreset(ids: number[]) {
-    set('deployed_equipment_ids', ids);
-  }
-
-  function savePreset() {
-    if (!newPresetName.trim() || !form.deployed_equipment_ids.length) return;
-    const updated = { ...presets, [newPresetName.trim()]: form.deployed_equipment_ids };
-    savePresets(updated);
-    setPresets(updated);
-    setNewPresetName('');
-  }
-
-  function deletePreset(name: string) {
-    const { [name]: _, ...rest } = presets;
-    savePresets(rest);
-    setPresets(rest);
+  function togglePreset(id: string) {
+    const cur = form.deployed_preset_ids;
+    set('deployed_preset_ids', cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
   }
 
   const set = <K extends keyof FormState>(key: K, val: FormState[K]) =>
     setForm(prev => ({ ...prev, [key]: val }));
 
-  function autoName() {
-    const d = new Date().toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' })
-      .replace(',', '').replace(/ /g, '-').toUpperCase();
-    const subj = form.lost_person_name ? `Missing – ${form.lost_person_name}` : 'Missing Person';
-    return `${subj} ${d}`;
+  function autoName(d4hId = '') {
+    const template = settings.opNameTemplate || '{location}-{date}-{d4h_id}';
+    const date = new Date().toISOString().slice(0, 10);
+    const rawLoc = form.last_seen_location || form.pls_location || '';
+    const location = rawLoc.split(',')[0]?.trim() || 'Location';
+    const subject = form.lost_person_name || '';
+    return template
+      .replace(/\{location\}/g, location)
+      .replace(/\{date\}/g, date)
+      .replace(/\{d4h_id\}/g, d4hId)
+      .replace(/\{subject\}/g, subject)
+      .replace(/[-–]{2,}/g, '-')
+      .replace(/^[-–\s]+|[-–\s]+$/g, '')
+      .trim() || `${location}-${date}`;
   }
 
   function nextStep() {
@@ -370,42 +360,50 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
 
     if (settings.d4hToken) {
       try {
+        const d4hBase = {
+          token: settings.d4hToken,
+          ...(settings.d4hTeamId ? { teamId: Number(settings.d4hTeamId) } : {}),
+        };
+        const isExercise = form.d4h_activity_type === 'exercise';
+
         if (form.d4h_mode === 'link' && form.d4h_existing_id.trim()) {
           // ── Link mode: update the existing D4H record ──────────────────────
           const existingId = form.d4h_existing_id.trim();
+          const updateAction = isExercise ? 'updateExercise' : 'updateIncident';
+          const idKey        = isExercise ? 'exerciseId'    : 'incidentId';
           await fetch('/api/d4h', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              action: 'updateIncident',
-              token: settings.d4hToken,
-              incidentId: existingId,
+              ...d4hBase,
+              action: updateAction,
+              [idKey]: existingId,
               title: form.d4h_title.trim() || form.name || autoName(),
               description: form.d4h_description.trim(),
             }),
           });
-          // Save the linked ID to the operation regardless of update success
-          if (form.d4h_activity_type === 'exercise') d4hExerciseId = existingId;
+          if (isExercise) d4hExerciseId = existingId;
           else d4hIncidentId = existingId;
 
         } else if (form.d4h_mode === 'create' && form.d4h_title.trim()) {
           // ── Create mode: create a new D4H record ───────────────────────────
-          const d4hPayload = {
-            title:       form.d4h_title.trim(),
-            description: form.d4h_description.trim(),
-            startsAt:    form.d4h_starts_at ? new Date(form.d4h_starts_at).toISOString() : new Date().toISOString(),
-            endsAt:      form.d4h_ends_at   ? new Date(form.d4h_ends_at).toISOString()   : undefined,
-          };
-          const action = form.d4h_activity_type === 'exercise' ? 'createExercise' : 'createIncident';
+          const createAction = isExercise ? 'createExercise' : 'createIncident';
           const res = await fetch('/api/d4h', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action, token: settings.d4hToken, ...d4hPayload }),
+            body: JSON.stringify({
+              ...d4hBase,
+              action: createAction,
+              title:       form.d4h_title.trim(),
+              description: form.d4h_description.trim(),
+              startsAt:    form.d4h_starts_at ? new Date(form.d4h_starts_at).toISOString() : new Date().toISOString(),
+              endsAt:      form.d4h_ends_at   ? new Date(form.d4h_ends_at).toISOString()   : undefined,
+            }),
           });
           const data = await res.json();
           if (res.ok) {
-            if (form.d4h_activity_type === 'exercise') d4hExerciseId = String(data.exerciseId);
-            else d4hIncidentId = String(data.incidentId);
+            if (isExercise) d4hExerciseId = String(data.exerciseId ?? data.exercise?.id);
+            else d4hIncidentId = String(data.incidentId ?? data.incident?.id);
           } else {
             console.warn('D4H creation failed:', data.error);
           }
@@ -421,7 +419,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          name: form.name || autoName(),
+          name: form.name || autoName(d4hIncidentId ?? d4hExerciseId ?? ''),
           operation_type: form.operation_type,
           priority: Number(form.priority),
           tasking_agency: form.tasking_agency || undefined,
@@ -452,16 +450,317 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
           d4h_incident_id: d4hIncidentId,
           d4h_exercise_id: d4hExerciseId,
           d4h_activity_type: form.d4h_activity_type,
+          deployed_presets_json: JSON.stringify(form.deployed_preset_ids),
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Failed to create operation');
-      onCreated(data.operation as Operation);
+      // Background qual sync — non-blocking, best-effort
+      if (settings.d4hToken && settings.d4hTeamId) {
+        fetch('/api/personnel/sync-d4h', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: settings.d4hToken, teamId: Number(settings.d4hTeamId) }),
+        }).catch(() => {});
+      }
+      // Move to deploy wizard instead of navigating away immediately
+      setCreatedOp(data.operation as Operation);
+      setDeployMode('decide');
+      setRollout({ d4h: 'idle', caltopo: 'idle', sms: 'idle', whiteboard: 'idle', errors: {}, smsCount: 0, done: false });
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to create operation');
     } finally {
       setSaving(false);
     }
+  }
+
+  // ── Deploy wizard helpers ─────────────────────────────────────────────────
+
+  async function patchCreatedOp(patch: Record<string, unknown>): Promise<Operation> {
+    if (!createdOp) throw new Error('No operation');
+    const token = localStorage.getItem('sarmanager_session_token') ?? '';
+    const res = await fetch(`/api/operations/${createdOp.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(patch),
+    });
+    const data = await res.json();
+    const updated = (data.operation ?? createdOp) as Operation;
+    setCreatedOp(updated);
+    return updated;
+  }
+
+  async function handleDeploy() {
+    if (!createdOp) return;
+    const op = await patchCreatedOp({ deploy_decision: 'yes', deploy_timestamp: new Date().toISOString() }).catch(() => createdOp);
+    setDeployMode('deploy');
+    runWizardRollout(op);
+  }
+
+  async function runWizardRollout(op: Operation) {
+    setRolloutRunning(true);
+    let cur = op;
+
+    // ── 1. D4H ──────────────────────────────────────────────────────────────
+    const alreadyD4H = Boolean(op.d4h_incident_id || op.d4h_exercise_id);
+    if (!alreadyD4H && settings.d4hToken && settings.d4hTeamId) {
+      setRollout(r => ({ ...r, d4h: 'running' }));
+      try {
+        const isExercise = op.d4h_activity_type === 'exercise';
+        const d = new Date();
+        const dateStr = d.toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' })
+          .toUpperCase().replace(/ /g, '-').replace(',', '');
+
+        const createRes = await fetch('/api/d4h', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: isExercise ? 'createExercise' : 'createIncident',
+            token: settings.d4hToken,
+            teamId: Number(settings.d4hTeamId),
+            title: `${dateStr} PENDING`,
+            description: [
+              op.lost_person_name ? `Missing ${[op.lost_person_age ? `${op.lost_person_age}y` : '', op.subject_sex, op.lost_person_name].filter(Boolean).join(' ')}.` : '',
+              op.subject_circumstance ? `Circumstance: ${op.subject_circumstance.slice(0, 200)}` : '',
+              op.tasking_agency ? `Tasking: ${op.tasking_agency}` : '',
+              op.oic_name ? `OIC: ${op.oic_name}` : '',
+            ].filter(Boolean).join('\n'),
+          }),
+        });
+        const createData = await createRes.json();
+        const activityId = isExercise
+          ? (createData.exerciseId ?? createData.exercise?.id)
+          : (createData.incidentId ?? createData.incident?.id);
+
+        if (!activityId) throw new Error('D4H returned no ID');
+
+        // Rename to include D4H ID (non-fatal)
+        fetch('/api/d4h', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: isExercise ? 'updateExercise' : 'updateIncident',
+            token: settings.d4hToken,
+            teamId: Number(settings.d4hTeamId),
+            [isExercise ? 'exerciseId' : 'incidentId']: activityId,
+            title: `${dateStr} #${activityId}`,
+          }),
+        }).catch(() => {});
+
+        cur = await patchCreatedOp(isExercise
+          ? { d4h_exercise_id: String(activityId) }
+          : { d4h_incident_id: String(activityId) });
+        setRollout(r => ({ ...r, d4h: 'done', d4hId: String(activityId) }));
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'D4H error';
+        setRollout(r => ({ ...r, d4h: 'error', errors: { ...r.errors, d4h: msg } }));
+      }
+    } else {
+      setRollout(r => ({
+        ...r,
+        d4h: alreadyD4H ? 'done' : 'skipped',
+        d4hId: cur.d4h_incident_id ?? cur.d4h_exercise_id ?? undefined,
+      }));
+    }
+
+    // ── 2. CalTopo ───────────────────────────────────────────────────────────
+    const ippLat = cur.ipp_type === 'pls' ? cur.pls_lat : cur.latitude;
+    const ippLon = cur.ipp_type === 'pls' ? cur.pls_lon : cur.longitude;
+    const caltopoConfigured = Boolean(settings.credentialId && settings.secret && settings.accountId);
+    if (!cur.caltopo_map_id && ippLat && ippLon && caltopoConfigured) {
+      setRollout(r => ({ ...r, caltopo: 'running' }));
+      try {
+        const profile = ISRID[cur.subject_category ?? ''] ?? ISRID.hiker;
+        const d4hId = cur.d4h_incident_id ?? cur.d4h_exercise_id;
+
+        const albertaDate = new Date().toLocaleDateString('en-CA', {
+          timeZone: 'America/Edmonton', year: 'numeric', month: '2-digit', day: '2-digit',
+        });
+
+        // Reverse geocode the IPP to get the real municipality/neighbourhood
+        let geoLocation = '';
+        try {
+          const rgParams = new URLSearchParams({ lat: String(ippLat), lon: String(ippLon) });
+          if (settings.hereApiKey?.trim()) rgParams.set('key', settings.hereApiKey.trim());
+          const rgRes = await fetch(`/api/geocode?${rgParams}`);
+          if (rgRes.ok) geoLocation = ((await rgRes.json()).municipality ?? '').trim();
+        } catch { /* non-fatal — fall back to user-entered text */ }
+
+        // Build location slug: prefer geocoded municipality, fall back to user-entered text
+        const fallbackDesc = (cur.ipp_type === 'pls' ? cur.pls_location : cur.last_seen_location) ?? '';
+        const rawLocation = geoLocation || fallbackDesc.split(',')[0]?.trim() || 'Location';
+        const locationSlug = rawLocation.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '-');
+
+        // Apply op-name template so map title and operation name always match
+        const template = settings.opNameTemplate || '{location}-{date}-{d4h_id}';
+        const mapTitle = template
+          .replace(/\{location\}/g, locationSlug)
+          .replace(/\{date\}/g, albertaDate)
+          .replace(/\{d4h_id\}/g, d4hId ?? '0000000')
+          .replace(/\{subject\}/g, cur.lost_person_name ?? '')
+          .replace(/[-–]{2,}/g, '-')
+          .replace(/^[-–\s]+|[-–\s]+$/g, '')
+          .trim() || `${locationSlug}-${albertaDate}`;
+
+        const ctBase = { credentialId: settings.credentialId, secret: settings.secret, accountId: settings.accountId };
+        const ct = (action: string, extra: object) => fetch('/api/caltopo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, ...ctBase, ...extra }),
+        }).then(r => r.json());
+
+        const { mapId, url } = await ct('createMap', { title: mapTitle, folderId: settings.folderId || undefined });
+
+        const subjectName = cur.lost_person_name ?? 'Subject';
+        const ippLabel = cur.ipp_type === 'pls' ? 'PLS (IPP)' : 'LKP (IPP)';
+
+        await ct('addFeature', {
+          mapId, folderId: settings.ippFolderId || undefined,
+          feature: {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [ippLon, ippLat] },
+            properties: { title: `${ippLabel} – ${subjectName}`, class: 'Marker', 'marker-color': '#FF6B35', 'marker-symbol': 'cp' },
+          },
+        });
+
+        if (cur.pls_lat && cur.pls_lon && cur.latitude && cur.longitude) {
+          const secLat = cur.ipp_type === 'lkp' ? cur.pls_lat : cur.latitude;
+          const secLon = cur.ipp_type === 'lkp' ? cur.pls_lon : cur.longitude;
+          const secLabel = cur.ipp_type === 'lkp' ? 'PLS' : 'LKP';
+          await ct('addFeature', {
+            mapId, folderId: settings.ippFolderId || undefined,
+            feature: {
+              type: 'Feature',
+              geometry: { type: 'Point', coordinates: [secLon, secLat] },
+              properties: { title: `${secLabel} – ${subjectName}`, class: 'Marker', 'marker-color': cur.ipp_type === 'lkp' ? '#0088FF' : '#FF00FF' },
+            },
+          });
+        }
+
+        const RING_COLORS_CT: Record<number, string> = { 25: '#FF0000', 50: '#FF3300', 75: '#FF8800', 95: '#FFCC00' };
+        const ringPcts = settings.lpbRingPcts?.length ? settings.lpbRingPcts : [50, 75, 95];
+        for (const { pct, km } of profile.distances.filter((d: { pct: number }) => ringPcts.includes(d.pct))) {
+          const ring = circlePolygon(ippLat, ippLon, km);
+          ring.properties = {
+            title: `${pct}% Probability (${km}km) – ${profile.label}`,
+            class: 'Shape', stroke: RING_COLORS_CT[pct] ?? '#aaa',
+            'stroke-width': 2, fill: RING_COLORS_CT[pct] ?? '#aaa', 'fill-opacity': 0,
+          };
+          await ct('addFeature', { mapId, folderId: settings.ringFolderId || undefined, feature: ring });
+        }
+
+        // Local snapshot for the board tab
+        const snapFeatures = [
+          { type: 'Feature', geometry: { type: 'Point', coordinates: [ippLon, ippLat] }, properties: { title: `${ippLabel} – ${subjectName}`, color: '#FF6B35', class: 'Marker' } },
+          ...(profile.distances.filter((d: { pct: number }) => ringPcts.includes(d.pct)).map(({ pct, km }: { pct: number; km: number }) => {
+            const ring = circlePolygon(ippLat, ippLon, km);
+            ring.properties = { title: `${pct}%`, stroke: RING_COLORS_CT[pct] ?? '#aaa', 'stroke-width': 2, fill: RING_COLORS_CT[pct] ?? '#aaa', 'fill-opacity': 0 };
+            return ring;
+          })),
+        ];
+
+        cur = await patchCreatedOp({
+          name: mapTitle,
+          caltopo_map_id: mapId,
+          caltopo_map_url: url,
+          caltopo_features: JSON.stringify({ type: 'FeatureCollection', features: snapFeatures }),
+        });
+        setRollout(r => ({ ...r, caltopo: 'done', caltopoUrl: url }));
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'CalTopo error';
+        setRollout(r => ({ ...r, caltopo: 'error', errors: { ...r.errors, caltopo: msg } }));
+      }
+    } else {
+      setRollout(r => ({
+        ...r,
+        caltopo: cur.caltopo_map_id ? 'done' : 'skipped',
+        caltopoUrl: cur.caltopo_map_url ?? (cur.caltopo_map_id ? `https://caltopo.com/m/${cur.caltopo_map_id}` : undefined),
+      }));
+    }
+
+    // ── 3. Twilio SMS + Voice Call ───────────────────────────────────────────
+    if (settings.twilioAccountSid && settings.twilioAuthToken && settings.twilioFromNumber) {
+      setRollout(r => ({ ...r, sms: 'running' }));
+      try {
+        const authToken = localStorage.getItem('sarmanager_session_token') ?? '';
+        const agency = cur.tasking_agency ?? 'SAR';
+        const age = cur.lost_person_age ? `${cur.lost_person_age}yo` : '';
+        const sex = cur.subject_sex ? cur.subject_sex.toLowerCase() : '';
+        const profile = ISRID[cur.subject_category ?? '']?.label ?? 'person';
+        const subject = [age, sex, profile].filter(Boolean).join(' ');
+        const portalUrl = `${window.location.origin}/checkin/${cur.id}`;
+
+        // SMS includes the check-in URL
+        const smsMsg = `${agency} SAR callout — missing ${subject}. Check in: ${portalUrl}`.slice(0, 160);
+        // Voice call message — no URL (not readable aloud)
+        const callMsg = `${agency} SAR callout. Locate missing ${subject}. Please respond immediately to your search manager.`;
+
+        const twilioBase = {
+          accountSid: settings.twilioAccountSid,
+          authToken: settings.twilioAuthToken,
+          fromNumber: settings.twilioFromNumber,
+        };
+
+        const [smsRes] = await Promise.all([
+          fetch('/api/twilio/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({ action: 'sms', ...twilioBase, message: smsMsg }),
+          }),
+          fetch('/api/twilio/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({ action: 'call', ...twilioBase, message: callMsg }),
+          }).catch(() => {}), // non-fatal if calls fail
+        ]);
+        const smsData = await smsRes.json();
+        setRollout(r => ({ ...r, sms: 'done', smsCount: (smsData as { sent?: number }).sent ?? 0 }));
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'SMS/call error';
+        setRollout(r => ({ ...r, sms: 'error', errors: { ...r.errors, sms: msg } }));
+      }
+    } else {
+      setRollout(r => ({ ...r, sms: 'skipped' }));
+    }
+
+    // ── 4. D4H Whiteboard ────────────────────────────────────────────────────
+    if (settings.d4hToken && settings.d4hTeamId) {
+      setRollout(r => ({ ...r, whiteboard: 'running' }));
+      try {
+        const mapUrl = cur.caltopo_map_url ?? (cur.caltopo_map_id ? `https://caltopo.com/m/${cur.caltopo_map_id}` : '');
+        const portalUrl = typeof window !== 'undefined'
+          ? `${window.location.origin}/checkin/${cur.id}`
+          : `/checkin/${cur.id}`;
+        await fetch('/api/d4h', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'postWhiteboard',
+            token: settings.d4hToken,
+            teamId: Number(settings.d4hTeamId),
+            title: `🔴 Active Search — ${cur.name}`,
+            content: [
+              `ACTIVE SEARCH OPERATION`,
+              cur.tasking_agency ? `Tasking: ${cur.tasking_agency}` : '',
+              cur.oic_name ? `OIC: ${cur.oic_name}` : '',
+              mapUrl ? `CalTopo: ${mapUrl}` : '',
+              `Check-In Portal: ${portalUrl}`,
+              `Started: ${new Date(cur.started_at).toLocaleString()}`,
+            ].filter(Boolean).join('\n'),
+            pinned: true,
+          }),
+        });
+        setRollout(r => ({ ...r, whiteboard: 'done' }));
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Whiteboard error';
+        setRollout(r => ({ ...r, whiteboard: 'error', errors: { ...r.errors, whiteboard: msg } }));
+      }
+    } else {
+      setRollout(r => ({ ...r, whiteboard: 'skipped' }));
+    }
+
+    setRollout(r => ({ ...r, done: true }));
+    setRolloutRunning(false);
   }
 
   const chip = (selected: boolean) =>
@@ -473,6 +772,136 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
     `px-3 py-2 rounded-lg border text-sm cursor-pointer transition-colors ${
       selected ? 'bg-red-50 text-red-700 border-red-400' : 'bg-gray-50 text-gray-700 border-gray-300 hover:border-red-400'
     }`;
+
+  // ── Deploy wizard render (post-creation) ────────────────────────────────
+
+  const STEP_ICON: Record<string, string> = { idle: '○', running: '⟳', done: '✓', error: '✗', skipped: '—' };
+  const STEP_COLOR: Record<string, string> = {
+    idle: 'border-gray-300 text-gray-500',
+    running: 'border-blue-400 text-blue-700 bg-blue-50',
+    done: 'border-green-500 text-green-800 bg-green-50',
+    error: 'border-red-400 text-red-700 bg-red-50',
+    skipped: 'border-gray-200 text-gray-400 bg-gray-50',
+  };
+
+  function RolloutStep({ status, label, extra, link }: { status: string; label: string; extra?: string; link?: string }) {
+    return (
+      <div className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${STEP_COLOR[status]}`}>
+        <span className="font-mono text-sm w-4 shrink-0">{STEP_ICON[status]}</span>
+        <span className="text-sm font-medium flex-1">{label}</span>
+        {extra && <span className="text-xs text-gray-500">{extra}</span>}
+        {link && status === 'done' && <a href={link} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline shrink-0">↗ Open</a>}
+      </div>
+    );
+  }
+
+  if (createdOp) {
+    const op = createdOp;
+    return (
+      <div className="max-w-2xl mx-auto space-y-6">
+
+        {/* Op created banner */}
+        <div className="bg-green-50 border border-green-200 rounded-xl px-5 py-3 flex items-center gap-3">
+          <span className="text-green-600 text-lg">✓</span>
+          <div>
+            <div className="font-semibold text-green-800 text-sm">Operation created</div>
+            <div className="text-green-700 text-xs">{op.name}</div>
+          </div>
+        </div>
+
+        {/* Decision */}
+        {deployMode === 'decide' && (
+          <div className="bg-white rounded-xl shadow border-2 border-blue-400 p-6">
+            <h2 className="text-xl font-bold text-gray-800 mb-2">Decision to Deploy</h2>
+            <p className="text-sm text-gray-500 mb-1">
+              Tasking from <strong>{op.tasking_agency ?? '—'}</strong>{op.oic_name ? ` via ${op.oic_name}` : ''}.
+            </p>
+            <p className="text-sm text-gray-500 mb-4">
+              Subject: <strong>{op.lost_person_name ?? 'Unknown'}</strong>{op.lost_person_age ? `, ${op.lost_person_age}y` : ''}.
+              {op.safety_concerns && <span className="text-red-600 ml-1">⚠ {op.safety_concerns.slice(0, 80)}</span>}
+            </p>
+            <div className="flex gap-3">
+              <button onClick={handleDeploy}
+                className="flex-1 bg-green-600 text-white py-4 rounded-xl text-lg font-bold hover:bg-green-700 transition-colors">
+                ✅ DEPLOY
+              </button>
+              <button onClick={() => setDeployMode('discuss')}
+                className="flex-1 border-2 border-yellow-500 text-yellow-600 py-4 rounded-xl text-lg font-bold hover:bg-yellow-50 transition-colors">
+                ⏸ DISCUSS FIRST
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Discuss */}
+        {deployMode === 'discuss' && (
+          <div className="bg-white rounded-xl shadow border-2 border-yellow-400 p-6">
+            <h2 className="text-lg font-bold text-yellow-600 mb-3">Under Discussion</h2>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Reason for discussion</label>
+            <input value={discussWhy} onChange={e => setDiscussWhy(e.target.value)}
+              placeholder="Insufficient resources, weather, jurisdiction…"
+              className="w-full p-2.5 border border-gray-300 rounded-lg text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <div className="flex gap-3">
+              <button onClick={handleDeploy}
+                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-bold hover:bg-green-700 transition-colors">
+                ✅ Deploy Now
+              </button>
+              <button onClick={() => onCreated(op)}
+                className="flex-1 border border-gray-300 text-gray-600 py-3 rounded-xl font-semibold hover:bg-gray-50 transition-colors">
+                Go to Dashboard →
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-2 text-center">You can initiate deployment from the dashboard later.</p>
+          </div>
+        )}
+
+        {/* Rollout progress */}
+        {deployMode === 'deploy' && (
+          <div className="bg-white rounded-xl shadow p-6">
+            <h2 className="text-lg font-bold text-gray-800 mb-4">
+              {rollout.done ? 'Operation Ready' : 'Setting up your operation…'}
+            </h2>
+            <div className="space-y-2">
+              <RolloutStep status={rollout.d4h} label={op.d4h_activity_type === 'exercise' ? 'D4H Exercise' : 'D4H Incident'}
+                extra={rollout.d4hId ? `#${rollout.d4hId}` : rollout.errors.d4h} />
+              <RolloutStep status={rollout.caltopo} label="CalTopo Map"
+                extra={rollout.errors.caltopo} link={rollout.caltopoUrl} />
+              <RolloutStep status={rollout.sms} label="SMS + Voice Callout"
+                extra={rollout.sms === 'done' ? `${rollout.smsCount} texts sent` : rollout.errors.sms} />
+              <RolloutStep status={rollout.whiteboard} label="D4H Whiteboard"
+                extra={rollout.errors.whiteboard} />
+            </div>
+            {rollout.done && (() => {
+              const portalUrl = `${window.location.origin}/checkin/${createdOp!.id}`;
+              return (
+                <>
+                  <div className="mt-4 bg-green-50 border border-green-200 rounded-xl p-3">
+                    <div className="text-xs font-bold text-green-800 mb-1">Searcher Check-In Link</div>
+                    <div className="flex items-center gap-2">
+                      <code className="flex-1 text-xs font-mono text-green-900 bg-white border border-green-200 rounded px-2 py-1.5 break-all">{portalUrl}</code>
+                      <button
+                        onClick={() => navigator.clipboard.writeText(portalUrl)}
+                        className="shrink-0 px-2.5 py-1.5 bg-green-600 text-white text-xs rounded-lg hover:bg-green-700 transition-colors">
+                        Copy
+                      </button>
+                    </div>
+                    <p className="text-xs text-green-700 mt-1">This URL was included in the Twilio SMS sent to all roster members.</p>
+                  </div>
+                  <div className="mt-4 flex justify-end">
+                    <button onClick={() => onCreated(createdOp!)}
+                      className="bg-green-600 text-white px-8 py-3 rounded-xl text-base font-bold hover:bg-green-700 transition-colors">
+                      Open Dashboard →
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-2xl mx-auto">
@@ -508,7 +937,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">Tasking Agency *</label>
             <div className="flex flex-wrap gap-2 mb-2">
-              {AGENCIES.map(a => (
+              {(settings.taskingAgencies ?? ['RCMP', 'MHPS', 'AHS', 'STARS', 'CJFR', 'Other']).map(a => (
                 <button key={a} type="button" onClick={() => set('tasking_agency', a === 'Other' ? '' : a)}
                   className={chip(form.tasking_agency === a)}>
                   {a}
@@ -795,7 +1224,9 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
             ))}
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Operation Name</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Operation Name
+              <span className="text-xs text-gray-400 font-normal ml-1">(D4H # added automatically after creation)</span>
+            </label>
             <input value={form.name || autoName()} onChange={e => set('name', e.target.value)}
               placeholder="Auto-generated — edit if needed"
               className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
@@ -914,86 +1345,70 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
 
       {/* ── Step 7: EQUIPMENT ── */}
       {step === 7 && (
-        <div className="space-y-4">
+        <div className="space-y-3">
           <p className="text-sm text-gray-500">
-            Select the equipment being deployed on this operation.
-            {!settings.d4hToken && ' Configure a D4H token in Settings to load equipment from D4H.'}
+            Select the deployment presets that apply to this operation. Searchers will see the
+            associated equipment and vehicles during check-in.
           </p>
 
-          {/* Presets */}
-          {Object.keys(presets).length > 0 && (
-            <div className="bg-gray-50 rounded-xl p-4">
-              <div className="text-sm font-medium text-gray-700 mb-2">Saved Presets</div>
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(presets).map(([name, ids]) => (
-                  <div key={name} className="flex items-center gap-1">
-                    <button type="button" onClick={() => applyPreset(ids)}
-                      className={`px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                        JSON.stringify(form.deployed_equipment_ids.slice().sort()) === JSON.stringify(ids.slice().sort())
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'border-gray-300 text-gray-700 hover:border-blue-400 hover:bg-blue-50'
+          {presetsLoading && (
+            <div className="text-center text-gray-500 py-8 text-sm">Loading presets…</div>
+          )}
+          {presetsError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{presetsError}</div>
+          )}
+          {!presetsLoading && !presetsError && availablePresets.length === 0 && (
+            <div className="border border-dashed border-gray-300 rounded-xl p-6 text-center text-sm text-gray-500">
+              No deployment presets configured yet.
+              <br />
+              <span className="text-gray-400">Go to Equipment → Presets tab to create them.</span>
+            </div>
+          )}
+          {!presetsLoading && availablePresets.length > 0 && (
+            <div className="space-y-2">
+              {availablePresets.map(preset => {
+                const selected = form.deployed_preset_ids.includes(preset.id);
+                let items: string[] = [];
+                try { items = JSON.parse(preset.items_json ?? '[]'); } catch { /* ignore */ }
+                return (
+                  <button key={preset.id} type="button" onClick={() => togglePreset(preset.id)}
+                    className={`w-full text-left rounded-xl border-2 p-4 transition-colors ${
+                      selected
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
+                    }`}>
+                    <div className="flex items-start gap-3">
+                      <div className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                        selected ? 'bg-blue-600 border-blue-600' : 'border-gray-300'
                       }`}>
-                      {name}
-                      <span className="text-xs opacity-70 ml-1">({ids.length})</span>
-                    </button>
-                    <button type="button" onClick={() => deletePreset(name)}
-                      title="Delete preset"
-                      className="text-gray-400 hover:text-red-500 text-xs px-1">×</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Equipment list */}
-          {!settings.d4hToken ? (
-            <div className="border border-dashed border-gray-300 rounded-xl p-6 text-center text-gray-500 text-sm">
-              D4H not configured — equipment list unavailable.
-            </div>
-          ) : eqLoading ? (
-            <div className="text-center text-gray-500 py-8">Loading equipment from D4H…</div>
-          ) : eqError ? (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{eqError}</div>
-          ) : equipment.length === 0 ? (
-            <div className="text-center text-gray-500 py-8 text-sm">No equipment found in D4H.</div>
-          ) : (
-            <div className="border border-gray-200 rounded-xl overflow-hidden">
-              {equipment.map((item, i) => (
-                <label key={item.id}
-                  className={`flex items-center gap-3 p-3 cursor-pointer hover:bg-blue-50 transition-colors ${i > 0 ? 'border-t border-gray-100' : ''} ${form.deployed_equipment_ids.includes(item.id) ? 'bg-blue-50' : 'bg-white'}`}>
-                  <input type="checkbox"
-                    checked={form.deployed_equipment_ids.includes(item.id)}
-                    onChange={() => toggleEquipment(item.id)}
-                    className="w-4 h-4 accent-blue-600 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-gray-800 truncate">{item.title}</div>
-                    {(item.ref || item.category?.title) && (
-                      <div className="text-xs text-gray-500">
-                        {[item.ref, item.category?.title].filter(Boolean).join(' · ')}
+                        {selected && <span style={{ color: '#fff', fontSize: 11, fontWeight: 700, lineHeight: 1 }}>✓</span>}
                       </div>
-                    )}
-                  </div>
-                </label>
-              ))}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-800 text-sm">{preset.name}</div>
+                        {preset.description && (
+                          <div className="text-xs text-gray-500 mt-0.5">{preset.description}</div>
+                        )}
+                        {(items.length > 0 || preset.containers.length > 0) && (
+                          <div className="mt-1.5 flex flex-wrap gap-1">
+                            {items.map((item, i) => (
+                              <span key={i} className="text-xs bg-gray-100 text-gray-600 rounded px-2 py-0.5">{item}</span>
+                            ))}
+                            {preset.containers.map(c => (
+                              <span key={c} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 rounded px-2 py-0.5">{c}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
 
-          {/* Save as preset */}
-          {form.deployed_equipment_ids.length > 0 && (
-            <div className="flex gap-2 items-center">
-              <input value={newPresetName} onChange={e => setNewPresetName(e.target.value)}
-                placeholder="Save selection as preset…"
-                className="flex-1 p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <button type="button" onClick={savePreset} disabled={!newPresetName.trim()}
-                className="px-3 py-2 bg-gray-700 text-white text-sm rounded hover:bg-gray-800 disabled:opacity-50 transition-colors">
-                Save
-              </button>
-            </div>
-          )}
-
-          {form.deployed_equipment_ids.length > 0 && (
+          {form.deployed_preset_ids.length > 0 && (
             <p className="text-sm text-green-700 font-medium">
-              {form.deployed_equipment_ids.length} item{form.deployed_equipment_ids.length !== 1 ? 's' : ''} selected for deployment
+              {form.deployed_preset_ids.length} preset{form.deployed_preset_ids.length !== 1 ? 's' : ''} selected
             </p>
           )}
         </div>
@@ -1018,7 +1433,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
               ['Safety',    form.safety_concerns?.slice(0, 60)],
               ['Profile',   ISRID[form.subject_category]?.label],
               ['D4H',       form.d4h_title ? `${form.d4h_activity_type === 'exercise' ? 'Exercise' : 'Incident'}: ${form.d4h_title.slice(0, 40)}` : undefined],
-              ['Equipment', form.deployed_equipment_ids.length ? `${form.deployed_equipment_ids.length} item${form.deployed_equipment_ids.length !== 1 ? 's' : ''} selected` : undefined],
+              ['Equipment', form.deployed_preset_ids.length ? `${form.deployed_preset_ids.length} preset${form.deployed_preset_ids.length !== 1 ? 's' : ''}` : undefined],
             ].map(([k, v]) => v ? (
               <div key={String(k)} className="contents">
                 <span className="text-gray-500 font-medium">{k}</span>

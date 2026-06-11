@@ -12,10 +12,12 @@ export default function NewOperationPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 p-6">
-      <div className="max-w-2xl mx-auto">
-        <h1 className="text-2xl font-bold text-gray-800 mb-6">New Operation</h1>
-        <div className="bg-white rounded-xl shadow p-6">
+    <div className="app-content panel">
+      <div style={{ maxWidth: 760 }}>
+        <div className="page-header">
+          <h1 className="page-title">New Operation</h1>
+        </div>
+        <div className="card">
           <OperationIntake
             onCreated={handleCreated}
             onCancel={() => router.push('/operations')}

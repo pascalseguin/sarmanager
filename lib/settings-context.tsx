@@ -15,6 +15,22 @@ export interface CalTopoSettings {
   d4hTeamId: string;
   d4hTeamName: string;
   hereApiKey: string;
+  opNameTemplate: string;
+  // Organization identity
+  orgName: string;
+  orgFullName: string;
+  // Operational presets
+  taskingAgencies: string[];
+  lpbRingPcts: number[];
+  // Twilio
+  twilioAccountSid: string;
+  twilioAuthToken: string;
+  twilioFromNumber: string;
+  // Radio check aging thresholds (minutes)
+  radioCheckYellowMins: number;
+  radioCheckRedMins: number;
+  // IMT Checklists (null = use built-in defaults)
+  imtChecklists: { title: string; color: string; tasks: string[] }[] | null;
 }
 
 interface SettingsContextType {
@@ -38,6 +54,17 @@ const defaultSettings: CalTopoSettings = {
   d4hTeamId: '',
   d4hTeamName: '',
   hereApiKey: '',
+  opNameTemplate: '{location}-{date}-{d4h_id}',
+  orgName: 'SEASAR',
+  orgFullName: 'South Eastern Alberta Search & Rescue',
+  taskingAgencies: ['RCMP', 'MHPS', 'AHS', 'STARS', 'CJFR', 'Other'],
+  lpbRingPcts: [50, 75, 95],
+  twilioAccountSid: '',
+  twilioAuthToken: '',
+  twilioFromNumber: '',
+  radioCheckYellowMins: 45,
+  radioCheckRedMins: 60,
+  imtChecklists: null,
 };
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);

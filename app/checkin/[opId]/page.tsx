@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, use } from 'react';
 import { useRouter } from 'next/navigation';
+import { useSettings } from '@/lib/settings-context';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -93,6 +94,7 @@ function WeatherWidget({ lat, lon }: { lat: number; lon: number }) {
 export default function CheckInPage({ params }: { params: Promise<{ opId: string }> }) {
   const { opId } = use(params);
   const router = useRouter();
+  const { settings } = useSettings();
 
   const [opName, setOpName] = useState('');
   const [deployTimestamp, setDeployTimestamp] = useState<string | undefined>(undefined);
@@ -337,7 +339,7 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
         {step === 0 && (
           <div className="bg-white rounded-xl shadow p-5 border-l-4 border-blue-500">
             <h2 className="font-bold text-lg mb-1">Identify Yourself</h2>
-            <p className="text-sm text-gray-500 mb-4">Your name and phone must match the SEASAR roster.</p>
+            <p className="text-sm text-gray-500 mb-4">Your name and phone must match the {settings.orgName} roster.</p>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>

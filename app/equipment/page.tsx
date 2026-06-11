@@ -76,9 +76,23 @@ function patchResult(id: string, patch: Partial<InspResult>) {
   } catch { /* empty */ }
 }
 
-// ── Quick check constants ─────────────────────────────────────────────────────
+// ── QC template types + storage ───────────────────────────────────────────────
 
-const QUICK_CHECKS = [
+interface QCTemplate {
+  id: string;
+  name: string;
+  description: string;
+  checks: string[];
+  createdAt: string;
+}
+
+const QC_TMPL_KEY = 'sarmanager_qc_templates';
+const loadQCTemplates = (): QCTemplate[] => { try { return JSON.parse(localStorage.getItem(QC_TMPL_KEY) ?? '[]'); } catch { return []; } };
+const saveQCTemplates = (t: QCTemplate[]) => localStorage.setItem(QC_TMPL_KEY, JSON.stringify(t));
+
+// ── Default quick check items ─────────────────────────────────────────────────
+
+const DEFAULT_QC_CHECKS = [
   'Fuel adequate',
   'Engine oil OK',
   'All lights working',
@@ -90,27 +104,22 @@ const QUICK_CHECKS = [
   'No visible body damage',
   'PPE and gear loaded',
 ];
+
 const CONDITIONS = ['Good', 'Fair — minor issues', 'Poor — flag for maintenance'] as const;
 
-function formatQuickCheckNote(
-  item: D4HEquipmentItem,
-  inspector: string,
-  condition: string,
-  fuel: string,
-  checks: Record<string, boolean>,
-  notes: string,
+function formatQCNote(
+  itemName: string, inspector: string, condition: string, fuel: string,
+  checks: Record<string, boolean>, templateName: string, notes: string,
 ): string {
-  const ts = new Date().toLocaleString('en-CA', {
-    year: 'numeric', month: 'short', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  });
+  const ts = new Date().toLocaleString('en-CA', { year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   const lines = [
     `── QUICK CHECK: ${ts} ──`,
+    `Template: ${templateName}`,
     `Inspector: ${inspector || 'unknown'}`,
     `Condition: ${condition}`,
     `Fuel: ${fuel}`,
     '',
-    ...QUICK_CHECKS.map(c => `${checks[c] ? '✓' : '✗'} ${c}`),
+    ...Object.entries(checks).map(([c, ok]) => `${ok ? '✓' : '✗'} ${c}`),
   ];
   if (notes.trim()) lines.push('', `Notes: ${notes.trim()}`);
   return lines.join('\n');
@@ -123,10 +132,35 @@ export default function EquipmentPage() {
   const d4hToken = settings.d4hToken;
   const configured = Boolean(d4hToken);
 
-  const [tab, setTab] = useState<'registry' | 'presets' | 'quickcheck' | 'inspections'>('registry');
+  const [tab, setTab] = useState<'registry' | 'presets' | 'quickcheck' | 'inspections' | 'templates'>('registry');
   const [equipment, setEquipment] = useState<D4HEquipmentItem[]>([]);
   const [loadingEq, setLoadingEq] = useState(false);
   const [eqError, setEqError] = useState('');
+
+  // Lifted state shared between InspectionsTab and TemplatesTab
+  const [qcTemplates, setQCTemplates]     = useState<QCTemplate[]>(loadQCTemplates);
+  const [inspTemplates, setInspTemplates] = useState<InspTemplate[]>(loadTemplates);
+  const [assignments, setAssignments]     = useState<Record<string, string[]>>(loadAssignments);
+  const [inspResults, setInspResults]     = useState<InspResult[]>(loadResults);
+
+  function updateQCTemplates(next: QCTemplate[])             { saveQCTemplates(next);   setQCTemplates(next); }
+  function updateInspTemplates(next: InspTemplate[])         { saveTemplates(next);     setInspTemplates(next); }
+  function updateAssignments(next: Record<string, string[]>) { saveAssignments(next);   setAssignments(next); }
+  function addInspResult(r: InspResult)                      { const next = [r, ...inspResults]; saveResults(next); setInspResults(next); }
+
+  // Seed default QC template on first load
+  useEffect(() => {
+    if (loadQCTemplates().length === 0) {
+      const defaultTpl: QCTemplate = {
+        id: 'default-vehicle-check',
+        name: 'Standard Vehicle Pre-Departure',
+        description: 'Pre-departure check for all vehicles and equipment',
+        checks: DEFAULT_QC_CHECKS,
+        createdAt: new Date().toISOString(),
+      };
+      updateQCTemplates([defaultTpl]);
+    }
+  }, []);
 
   const d4hTeamId = settings.d4hTeamId;
   const callD4H = useCallback(async (action: string, extra: object = {}) => {
@@ -158,10 +192,10 @@ export default function EquipmentPage() {
   const token = typeof window !== 'undefined' ? (localStorage.getItem('sarmanager_session_token') ?? '') : '';
 
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
-      <div className="max-w-5xl mx-auto">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl font-bold text-gray-900">Equipment</h1>
+    <div className="app-content panel">
+      <div style={{ maxWidth: 960 }}>
+        <div className="page-header">
+          <h1 className="page-title">Equipment</h1>
           {(tab === 'quickcheck' || tab === 'inspections') && (
             <button onClick={loadEquipment} disabled={loadingEq}
               className="text-sm text-blue-600 hover:underline disabled:opacity-50">
@@ -170,15 +204,16 @@ export default function EquipmentPage() {
           )}
         </div>
 
-        <div className="flex gap-1 bg-white rounded-xl shadow p-1 mb-4 overflow-x-auto">
+        <div className="sar-tabs" style={{ marginBottom: 20 }}>
           {([
             { id: 'registry',    label: '📦 Registry' },
             { id: 'presets',     label: '🗂 Presets' },
             { id: 'quickcheck',  label: 'Quick Check' },
             { id: 'inspections', label: 'Inspections' },
+            { id: 'templates',   label: '📋 Templates' },
           ] as const).map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${tab === t.id ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}>
+              className={`sar-tab ${tab === t.id ? 'active' : ''}`}>
               {t.label}
             </button>
           ))}
@@ -198,7 +233,7 @@ export default function EquipmentPage() {
           </div>
         )}
         {tab === 'quickcheck' && configured && (
-          <QuickCheckTab equipment={equipment} loading={loadingEq} callD4H={callD4H} />
+          <QuickCheckTab qcTemplates={qcTemplates} callD4H={callD4H} token={token} />
         )}
         {tab === 'inspections' && !configured && (
           <div className="bg-white rounded-xl shadow p-6 text-center text-gray-500">
@@ -207,98 +242,290 @@ export default function EquipmentPage() {
           </div>
         )}
         {tab === 'inspections' && configured && (
-          <InspectionsTab equipment={equipment} loading={loadingEq} callD4H={callD4H} />
+          <InspectionsTab
+            equipment={equipment} loading={loadingEq} callD4H={callD4H}
+            inspTemplates={inspTemplates} assignments={assignments}
+            results={inspResults} onResult={addInspResult}
+          />
+        )}
+
+        {tab === 'templates' && (
+          <TemplatesTab
+            equipment={equipment}
+            qcTemplates={qcTemplates}     onQCTemplatesChange={updateQCTemplates}
+            inspTemplates={inspTemplates} onInspTemplatesChange={updateInspTemplates}
+            assignments={assignments}     onAssignmentsChange={updateAssignments}
+          />
         )}
       </div>
     </div>
   );
 }
 
+// ── D4H call helper type ──────────────────────────────────────────────────────
+
+type D4HCallFn = (action: string, extra?: object) => Promise<Record<string, unknown>>;
+
 // ── Quick Check Tab ───────────────────────────────────────────────────────────
 
 function QuickCheckTab({
-  equipment, loading, callD4H,
+  qcTemplates, callD4H, token,
 }: {
-  equipment: D4HEquipmentItem[];
-  loading: boolean;
-  callD4H: (action: string, extra?: object) => Promise<Record<string, unknown>>;
+  qcTemplates: QCTemplate[];
+  callD4H: D4HCallFn;
+  token: string;
 }) {
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [localEquipment, setLocalEquipment] = useState<LocalEquipment[]>([]);
+  const [containers, setContainers] = useState<string[]>([]);
+  const [presets, setPresets] = useState<Preset[]>([]);
+  const [loadingLocal, setLoadingLocal] = useState(true);
+
+  const [selectedTplId, setSelectedTplId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [filterContainer, setFilterContainer] = useState('');
+  const [filterPreset, setFilterPreset] = useState('');
+  const [filterTag, setFilterTag] = useState('');
+
   const [inspector, setInspector] = useState('');
   const [condition, setCondition] = useState<string>(CONDITIONS[0]);
   const [fuel, setFuel] = useState('Full');
-  const [checks, setChecks] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(QUICK_CHECKS.map(c => [c, true]))
-  );
+  const [checks, setChecks] = useState<Record<string, boolean>>({});
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState('');
+  const [submitResults, setSubmitResults] = useState<{ name: string; ok: boolean; msg: string }[]>([]);
   const [error, setError] = useState('');
 
-  const selected = equipment.find(e => e.id === selectedId);
-
-  async function submit() {
-    if (!selected || !inspector.trim()) return;
-    setSubmitting(true); setError(''); setSubmitted('');
+  async function loadLocal() {
+    setLoadingLocal(true);
     try {
-      const note = formatQuickCheckNote(selected, inspector, condition, fuel, checks, notes);
-      const isPoor = condition.startsWith('Poor');
-
-      // Try D4H — best-effort, never blocks completion
-      let d4hSynced = false;
-      await callD4H('logEquipmentUsage', { equipmentId: selected.id, notes: note })
-        .then(() => { d4hSynced = true; })
-        .catch(() => {});
-
-      if (d4hSynced) {
-        await callD4H('updateEquipmentStatus', {
-          equipmentId: selected.id,
-          status: isPoor ? 'Unserviceable' : 'Operational',
-          notes: note,
-        }).catch(() => {});
-
-        if (isPoor) {
-          await callD4H('createRepairTicket', {
-            equipmentId: selected.id,
-            title: `Failed Quick Check — ${selected.title}`,
-            description: `Item flagged as unserviceable by ${inspector} during quick check.\n\n${note}`,
-          }).catch(() => {});
-        }
-      }
-
-      setSubmitted(
-        d4hSynced
-          ? new Date().toLocaleTimeString('en-CA')
-          : `${new Date().toLocaleTimeString('en-CA')} — saved locally (D4H sync needs a linked operation)`
-      );
-      setNotes('');
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to submit');
-    } finally {
-      setSubmitting(false);
-    }
+      const [eqRes, cRes, pRes] = await Promise.all([
+        fetch('/api/equipment',            { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/equipment/containers', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/equipment/presets',    { headers: { Authorization: `Bearer ${token}` } }),
+      ]);
+      if (eqRes.ok) { const d = await eqRes.json(); setLocalEquipment(d.equipment ?? []); }
+      if (cRes.ok)  { const d = await cRes.json(); setContainers(d.containers ?? []); }
+      if (pRes.ok)  { const d = await pRes.json(); setPresets(d.presets ?? []); }
+    } catch { /* non-fatal */ }
+    finally { setLoadingLocal(false); }
   }
 
-  if (loading) return <div className="text-center text-gray-500 py-12">Loading equipment from D4H…</div>;
+  useEffect(() => { loadLocal(); }, []);
+
+  // Auto-select first template
+  useEffect(() => {
+    if (qcTemplates.length >= 1 && !selectedTplId) setSelectedTplId(qcTemplates[0].id);
+  }, [qcTemplates]);
+
+  // Reset checks when template changes
+  const selectedTpl = qcTemplates.find(t => t.id === selectedTplId) ?? null;
+  useEffect(() => {
+    if (selectedTpl) setChecks(Object.fromEntries(selectedTpl.checks.map(c => [c, true])));
+    else setChecks({});
+  }, [selectedTplId]);
+
+  // Vehicles/trailers — always shown in their own section
+  const VEHICLE_TYPES = ['Vehicle', 'Trailer', 'ATV', 'Boat'];
+  const vehicleItems = localEquipment.filter(i => VEHICLE_TYPES.includes(i.type ?? ''));
+
+  // All unique tags
+  const allTags = Array.from(new Set(
+    localEquipment.flatMap(i => (i.custom_tags ? i.custom_tags.split(',').map(t => t.trim()).filter(Boolean) : []))
+  )).sort();
+
+  // Filter non-vehicle equipment by container, preset, or tag
+  const presetContainers = filterPreset
+    ? (presets.find(p => p.id === filterPreset)?.containers ?? [])
+    : [];
+
+  const filteredEquipment = localEquipment.filter(item => {
+    if (VEHICLE_TYPES.includes(item.type ?? '')) return false; // vehicles shown separately
+    if (filterPreset && presetContainers.length > 0) return presetContainers.includes(item.container ?? '');
+    if (filterContainer) return item.container === filterContainer;
+    if (filterTag) {
+      const itemTags = (item.custom_tags ?? '').split(',').map(t => t.trim()).filter(Boolean);
+      return itemTags.includes(filterTag);
+    }
+    return true;
+  });
+
+  function toggleItem(id: string) {
+    setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  }
+
+  function selectAll() {
+    const allVisible = [...vehicleItems, ...filteredEquipment];
+    setSelectedIds(new Set(allVisible.map(i => i.id)));
+  }
+  function clearAll()  { setSelectedIds(new Set()); }
+
+  const selectedItems = localEquipment.filter(i => selectedIds.has(i.id));
+
+  async function submit() {
+    if (!selectedItems.length || !inspector.trim() || !selectedTpl) return;
+    setSubmitting(true); setError(''); setSubmitResults([]);
+    const isPoor = condition.startsWith('Poor');
+    const results: { name: string; ok: boolean; msg: string }[] = [];
+
+    for (const item of selectedItems) {
+      const note = formatQCNote(item.name, inspector, condition, fuel, checks, selectedTpl.name, notes);
+      if (!item.d4h_equipment_id) {
+        results.push({ name: item.name, ok: true, msg: 'Saved locally (no D4H link)' });
+        continue;
+      }
+      try {
+        let d4hSynced = false;
+        await callD4H('logEquipmentUsage', { equipmentId: item.d4h_equipment_id, notes: note })
+          .then(() => { d4hSynced = true; })
+          .catch(() => {});
+
+        if (d4hSynced) {
+          await callD4H('updateEquipmentStatus', {
+            equipmentId: item.d4h_equipment_id,
+            status: isPoor ? 'Unserviceable' : 'Operational',
+            notes: note,
+          }).catch(() => {});
+
+          if (isPoor) {
+            await callD4H('createRepairTicket', {
+              equipmentId: item.d4h_equipment_id,
+              title: `Failed Quick Check — ${item.name}`,
+              description: `Item flagged as unserviceable by ${inspector}.\n\n${note}`,
+            }).catch(() => {});
+          }
+          results.push({ name: item.name, ok: true, msg: 'Pushed to D4H' });
+        } else {
+          results.push({ name: item.name, ok: true, msg: 'Saved (D4H sync pending)' });
+        }
+      } catch (e: unknown) {
+        results.push({ name: item.name, ok: false, msg: e instanceof Error ? e.message : 'Failed' });
+      }
+    }
+
+    setSubmitResults(results);
+    setSelectedIds(new Set());
+    setNotes('');
+    setSubmitting(false);
+  }
+
+  if (loadingLocal) return <div className="text-center text-gray-500 py-12">Loading equipment registry…</div>;
 
   return (
     <div className="space-y-4">
+      {/* Template selector */}
       <div className="bg-white rounded-xl shadow p-4">
-        <label className="block text-sm font-medium text-gray-700 mb-2">Select equipment item</label>
-        <select value={selectedId ?? ''} onChange={e => setSelectedId(e.target.value ? Number(e.target.value) : null)}
-          className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
-          <option value="">— choose equipment —</option>
-          {equipment.map(item => (
-            <option key={item.id} value={item.id}>
-              {item.title}{item.ref ? ` (${item.ref})` : ''}{item.category?.title ? ` · ${item.category.title}` : ''}
-            </option>
-          ))}
-        </select>
+        <label className="block text-sm font-medium text-gray-700 mb-2">Quick Check Template</label>
+        {qcTemplates.length === 0 ? (
+          <p className="text-sm text-gray-500">No Quick Check templates. Create one in the <strong>Templates</strong> tab.</p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {qcTemplates.map(t => (
+              <button key={t.id} onClick={() => setSelectedTplId(t.id)}
+                className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors ${
+                  selectedTplId === t.id ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                }`}>{t.name}</button>
+            ))}
+          </div>
+        )}
+        {selectedTpl?.description && (
+          <p className="text-xs text-gray-500 mt-2">{selectedTpl.description}</p>
+        )}
       </div>
 
-      {selected && (
+      {/* Vehicles & Trailers — always visible */}
+      {vehicleItems.length > 0 && (
+        <div className="bg-white rounded-xl shadow p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-semibold text-gray-700">Vehicles & Trailers</span>
+            <button onClick={() => setSelectedIds(prev => {
+              const n = new Set(prev);
+              vehicleItems.forEach(v => n.add(v.id));
+              return n;
+            })} className="text-xs text-blue-600 hover:underline">Select all vehicles</button>
+          </div>
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            {vehicleItems.map((item, i) => (
+              <label key={item.id}
+                className={`flex items-center gap-3 p-2.5 cursor-pointer hover:bg-blue-50 transition-colors ${i > 0 ? 'border-t border-gray-100' : ''} ${selectedIds.has(item.id) ? 'bg-blue-50' : 'bg-white'}`}>
+                <input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggleItem(item.id)}
+                  className="w-4 h-4 accent-blue-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-800 truncate">{item.name}</div>
+                  <div className="text-xs text-gray-500">{[item.type, item.ref, item.container].filter(Boolean).join(' · ')}</div>
+                </div>
+                {!item.d4h_equipment_id && <span className="text-xs text-gray-400 shrink-0">no D4H</span>}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Equipment filter + multi-select */}
+      <div className="bg-white rounded-xl shadow p-4">
+        <div className="flex flex-wrap gap-3 mb-3 items-center">
+          <span className="text-sm font-medium text-gray-700">Equipment</span>
+          <select value={filterContainer} onChange={e => { setFilterContainer(e.target.value); setFilterPreset(''); setFilterTag(''); }}
+            className="border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All containers</option>
+            {containers.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select value={filterPreset} onChange={e => { setFilterPreset(e.target.value); setFilterContainer(''); setFilterTag(''); }}
+            className="border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">All presets</option>
+            {presets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          {allTags.length > 0 && (
+            <select value={filterTag} onChange={e => { setFilterTag(e.target.value); setFilterContainer(''); setFilterPreset(''); }}
+              className="border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+              <option value="">All labels</option>
+              {allTags.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          )}
+          <div className="flex gap-2 ml-auto">
+            <button onClick={selectAll} className="text-xs text-blue-600 hover:underline">Select all</button>
+            <button onClick={clearAll}  className="text-xs text-gray-500 hover:underline">Clear</button>
+          </div>
+        </div>
+
+        {localEquipment.filter(i => !VEHICLE_TYPES.includes(i.type ?? '')).length === 0 ? (
+          <p className="text-sm text-gray-500 text-center py-4">No non-vehicle equipment in the Registry. Add items in the Registry tab first.</p>
+        ) : filteredEquipment.length === 0 ? (
+          <p className="text-sm text-gray-500 text-center py-4">No equipment matches this filter.</p>
+        ) : (
+          <div className="border border-gray-200 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
+            {filteredEquipment.map((item, i) => (
+              <label key={item.id}
+                className={`flex items-center gap-3 p-2.5 cursor-pointer hover:bg-blue-50 transition-colors ${i > 0 ? 'border-t border-gray-100' : ''} ${selectedIds.has(item.id) ? 'bg-blue-50' : 'bg-white'}`}>
+                <input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggleItem(item.id)}
+                  className="w-4 h-4 accent-blue-600 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-800 truncate">{item.name}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs text-gray-500">{[item.container, item.type, item.ref].filter(Boolean).join(' · ')}</span>
+                    {item.custom_tags && item.custom_tags.split(',').map(t => t.trim()).filter(Boolean).map(t => (
+                      <span key={t} className="text-xs px-1 bg-purple-100 text-purple-700 rounded-full">{t}</span>
+                    ))}
+                  </div>
+                </div>
+                {!item.d4h_equipment_id && (
+                  <span className="text-xs text-gray-400 shrink-0">no D4H</span>
+                )}
+              </label>
+            ))}
+          </div>
+        )}
+
+        {selectedIds.size > 0 && (
+          <p className="text-xs text-blue-600 mt-2 font-medium">{selectedIds.size} item{selectedIds.size !== 1 ? 's' : ''} selected</p>
+        )}
+      </div>
+
+      {/* Check form */}
+      {selectedIds.size > 0 && selectedTpl && (
         <div className="bg-white rounded-xl shadow p-5 space-y-4">
-          <div className="text-base font-semibold text-gray-800">{selected.title}</div>
+          <div className="text-base font-semibold text-gray-800">
+            {selectedTpl.name} — {selectedIds.size} item{selectedIds.size !== 1 ? 's' : ''}
+          </div>
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Inspector name *</label>
@@ -335,15 +562,15 @@ function QuickCheckTab({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">Pre-departure checklist</label>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Checklist</label>
             <div className="space-y-2">
-              {QUICK_CHECKS.map(c => (
+              {selectedTpl.checks.map(c => (
                 <label key={c} className="flex items-center gap-3 cursor-pointer">
                   <div onClick={() => setChecks(prev => ({ ...prev, [c]: !prev[c] }))}
                     className={`w-6 h-6 rounded flex items-center justify-center text-sm font-bold shrink-0 cursor-pointer transition-colors ${
-                      checks[c] ? 'bg-green-500 text-white' : 'bg-red-100 border-2 border-red-400 text-red-500'
-                    }`}>{checks[c] ? '✓' : '✗'}</div>
-                  <span className={`text-sm ${checks[c] ? 'text-gray-700' : 'text-red-600 font-medium'}`}>{c}</span>
+                      checks[c] !== false ? 'bg-green-500 text-white' : 'bg-red-100 border-2 border-red-400 text-red-500'
+                    }`}>{checks[c] !== false ? '✓' : '✗'}</div>
+                  <span className={`text-sm ${checks[c] !== false ? 'text-gray-700' : 'text-red-600 font-medium'}`}>{c}</span>
                 </label>
               ))}
             </div>
@@ -357,18 +584,28 @@ function QuickCheckTab({
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
-          {submitted && <p className="text-sm text-green-600">✓ Submitted to D4H notes at {submitted}</p>}
 
           <button onClick={submit} disabled={submitting || !inspector.trim()}
             className="w-full bg-blue-600 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
-            {submitting ? 'Submitting…' : 'Submit Quick Check → D4H Notes'}
+            {submitting ? 'Submitting…' : `Submit Quick Check → ${selectedIds.size} item${selectedIds.size !== 1 ? 's' : ''}`}
           </button>
         </div>
       )}
 
-      {equipment.length === 0 && !loading && (
-        <div className="text-center text-gray-500 py-8 bg-white rounded-xl shadow">
-          <p>No equipment found in D4H.</p>
+      {/* Results summary */}
+      {submitResults.length > 0 && (
+        <div className="bg-white rounded-xl shadow p-4">
+          <div className="text-sm font-semibold text-gray-700 mb-2">Results</div>
+          <div className="space-y-1">
+            {submitResults.map((r, i) => (
+              <div key={i} className={`flex items-center gap-2 text-sm ${r.ok ? 'text-green-700' : 'text-red-600'}`}>
+                <span>{r.ok ? '✓' : '✗'}</span>
+                <span className="font-medium">{r.name}</span>
+                <span className="text-xs text-gray-500">— {r.msg}</span>
+              </div>
+            ))}
+          </div>
+          <button onClick={() => setSubmitResults([])} className="mt-2 text-xs text-gray-400 hover:text-gray-600">Dismiss</button>
         </div>
       )}
     </div>
@@ -377,23 +614,19 @@ function QuickCheckTab({
 
 // ── Inspections Tab ───────────────────────────────────────────────────────────
 
-type D4HCallFn = (action: string, extra?: object) => Promise<Record<string, unknown>>;
-
 function InspectionsTab({
   equipment, loading, callD4H,
+  inspTemplates, assignments, results, onResult,
 }: {
   equipment: D4HEquipmentItem[];
   loading: boolean;
   callD4H: D4HCallFn;
+  inspTemplates: InspTemplate[];
+  assignments: Record<string, string[]>;
+  results: InspResult[];
+  onResult: (r: InspResult) => void;
 }) {
-  const [subTab, setSubTab] = useState<'complete' | 'manage' | 'history'>('complete');
-  const [templates, setTemplates]     = useState<InspTemplate[]>(loadTemplates);
-  const [assignments, setAssignments] = useState<Record<string, string[]>>(loadAssignments);
-  const [results, setResults]         = useState<InspResult[]>(loadResults);
-
-  function updateTemplates(next: InspTemplate[])            { saveTemplates(next);   setTemplates(next); }
-  function updateAssignments(next: Record<string, string[]>){ saveAssignments(next); setAssignments(next); }
-  function addResult(r: InspResult)                         { const next = [r, ...results]; saveResults(next); setResults(next); }
+  const [subTab, setSubTab] = useState<'complete' | 'history'>('complete');
 
   if (loading) return <div className="text-center text-gray-500 py-12">Loading equipment…</div>;
 
@@ -402,7 +635,6 @@ function InspectionsTab({
       <div className="flex gap-1 bg-white rounded-xl shadow p-1">
         {([
           { id: 'complete', label: 'Complete Inspection' },
-          { id: 'manage',   label: 'Manage' },
           { id: 'history',  label: 'History' },
         ] as const).map(t => (
           <button key={t.id} onClick={() => setSubTab(t.id)}
@@ -415,23 +647,14 @@ function InspectionsTab({
       {subTab === 'complete' && (
         <CompleteInspection
           equipment={equipment}
-          templates={templates}
+          templates={inspTemplates}
           assignments={assignments}
-          onResult={addResult}
+          onResult={onResult}
           callD4H={callD4H}
         />
       )}
-      {subTab === 'manage' && (
-        <ManageInspections
-          equipment={equipment}
-          templates={templates}
-          assignments={assignments}
-          onTemplatesChange={updateTemplates}
-          onAssignmentsChange={updateAssignments}
-        />
-      )}
       {subTab === 'history' && (
-        <InspectionHistory results={results} equipment={equipment} templates={templates} />
+        <InspectionHistory results={results} equipment={equipment} templates={inspTemplates} />
       )}
     </div>
   );
@@ -548,7 +771,7 @@ function CompleteInspection({
     return (
       <div className="bg-white rounded-xl shadow p-6 text-center text-gray-500 text-sm">
         <p className="font-medium mb-1">No equipment has inspection templates assigned.</p>
-        <p>Go to <strong>Manage</strong> to create templates and assign them to equipment.</p>
+        <p>Go to the <strong>Templates</strong> tab to create templates and assign them to equipment.</p>
       </div>
     );
   }
@@ -563,7 +786,7 @@ function CompleteInspection({
           <option value="">— choose equipment —</option>
           {assignedEquipment.map(item => (
             <option key={item.id} value={item.id}>
-              {item.title}{item.ref ? ` (${item.ref})` : ''}{item.category?.title ? ` · ${item.category.title}` : ''}
+              {item.ref ? `${item.ref}` : item.title}{item.ref && item.title ? ` — ${item.title}` : ''}{item.category?.title ? ` · ${item.category.title}` : ''}
             </option>
           ))}
         </select>
@@ -889,9 +1112,9 @@ function ManageInspections({
                           <input type="checkbox" checked={assignSel.has(item.id)} onChange={() => toggleAssignEq(item.id)}
                             className="w-4 h-4 accent-blue-600 shrink-0" />
                           <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-gray-800 truncate">{item.title}</div>
-                            {(item.ref || item.category?.title) && (
-                              <div className="text-xs text-gray-500">{[item.ref, item.category?.title].filter(Boolean).join(' · ')}</div>
+                            <div className="text-sm font-medium text-gray-800 truncate">{item.ref || item.title}</div>
+                            {(item.ref && item.title || item.category?.title) && (
+                              <div className="text-xs text-gray-500">{[item.ref ? item.title : null, item.category?.title].filter(Boolean).join(' · ')}</div>
                             )}
                           </div>
                         </label>
@@ -1003,13 +1226,191 @@ function InspectionHistory({
   );
 }
 
+// ── Templates Tab ─────────────────────────────────────────────────────────────
+
+function TemplatesTab({
+  equipment,
+  qcTemplates, onQCTemplatesChange,
+  inspTemplates, onInspTemplatesChange,
+  assignments, onAssignmentsChange,
+}: {
+  equipment: D4HEquipmentItem[];
+  qcTemplates: QCTemplate[];
+  onQCTemplatesChange: (t: QCTemplate[]) => void;
+  inspTemplates: InspTemplate[];
+  onInspTemplatesChange: (t: InspTemplate[]) => void;
+  assignments: Record<string, string[]>;
+  onAssignmentsChange: (a: Record<string, string[]>) => void;
+}) {
+  const [section, setSection] = useState<'quickcheck' | 'inspection'>('quickcheck');
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 bg-white rounded-xl shadow p-1">
+        <button onClick={() => setSection('quickcheck')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${section === 'quickcheck' ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}>
+          Quick Check Templates
+        </button>
+        <button onClick={() => setSection('inspection')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${section === 'inspection' ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'}`}>
+          Inspection Templates
+        </button>
+      </div>
+
+      {section === 'quickcheck' && (
+        <QCTemplatesManager templates={qcTemplates} onTemplatesChange={onQCTemplatesChange} />
+      )}
+      {section === 'inspection' && (
+        <ManageInspections
+          equipment={equipment}
+          templates={inspTemplates}
+          assignments={assignments}
+          onTemplatesChange={onInspTemplatesChange}
+          onAssignmentsChange={onAssignmentsChange}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── QC Templates Manager ──────────────────────────────────────────────────────
+
+function QCTemplatesManager({
+  templates, onTemplatesChange,
+}: {
+  templates: QCTemplate[];
+  onTemplatesChange: (t: QCTemplate[]) => void;
+}) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [desc, setDesc] = useState('');
+  const [checks, setChecks] = useState<string[]>(['']);
+
+  function startCreate() {
+    setEditId(null);
+    setName(''); setDesc(''); setChecks(['']);
+    setShowCreate(true);
+  }
+
+  function startEdit(t: QCTemplate) {
+    setEditId(t.id);
+    setName(t.name); setDesc(t.description); setChecks([...t.checks]);
+    setShowCreate(true);
+  }
+
+  function addCheck() { setChecks(prev => [...prev, '']); }
+  function removeCheck(i: number) { setChecks(prev => prev.filter((_, idx) => idx !== i)); }
+  function updateCheck(i: number, val: string) { setChecks(prev => prev.map((c, idx) => idx === i ? val : c)); }
+
+  function save() {
+    if (!name.trim() || checks.every(c => !c.trim())) return;
+    const filteredChecks = checks.filter(c => c.trim());
+    if (editId) {
+      onTemplatesChange(templates.map(t => t.id === editId
+        ? { ...t, name: name.trim(), description: desc.trim(), checks: filteredChecks }
+        : t
+      ));
+    } else {
+      const tpl: QCTemplate = {
+        id: crypto.randomUUID(),
+        name: name.trim(),
+        description: desc.trim(),
+        checks: filteredChecks,
+        createdAt: new Date().toISOString(),
+      };
+      onTemplatesChange([...templates, tpl]);
+    }
+    setShowCreate(false); setEditId(null);
+  }
+
+  function deleteTemplate(id: string) {
+    if (!confirm('Delete this template?')) return;
+    onTemplatesChange(templates.filter(t => t.id !== id));
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-gray-500 bg-white rounded-xl shadow p-4">
+        Quick Check templates define the checklist used when performing a Quick Check on equipment.
+        Create multiple templates for different equipment types (e.g. vehicles, radios, medical kits).
+      </p>
+
+      {templates.map(t => (
+        <div key={t.id} className="bg-white rounded-xl shadow p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-gray-800">{t.name}</div>
+              {t.description && <div className="text-xs text-gray-500 mt-0.5">{t.description}</div>}
+              <div className="flex flex-wrap gap-1 mt-2">
+                {t.checks.map((c, i) => (
+                  <span key={i} className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{c}</span>
+                ))}
+              </div>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button onClick={() => startEdit(t)} className="text-sm text-blue-600 hover:underline font-medium">Edit</button>
+              <button onClick={() => deleteTemplate(t.id)} className="text-sm text-red-500 hover:text-red-700 font-medium">Delete</button>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {showCreate ? (
+        <div className="bg-white rounded-xl shadow p-5 border-2 border-blue-400 space-y-3">
+          <div className="font-semibold text-gray-800">{editId ? 'Edit Template' : 'New Quick Check Template'}</div>
+
+          <input value={name} onChange={e => setName(e.target.value)}
+            placeholder="Template name (e.g. Vehicle Pre-Departure)"
+            className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <input value={desc} onChange={e => setDesc(e.target.value)}
+            placeholder="Description (optional)"
+            className="w-full p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+
+          <div>
+            <div className="text-sm font-medium text-gray-700 mb-2">Checklist items</div>
+            <div className="space-y-2">
+              {checks.map((c, i) => (
+                <div key={i} className="flex gap-2 items-center">
+                  <input value={c} onChange={e => updateCheck(i, e.target.value)}
+                    placeholder={`Item ${i + 1}`}
+                    className="flex-1 p-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  {checks.length > 1 && (
+                    <button onClick={() => removeCheck(i)} className="text-red-400 hover:text-red-600 text-xl font-bold px-1 shrink-0">×</button>
+                  )}
+                </div>
+              ))}
+              <button onClick={addCheck} className="text-sm text-blue-600 hover:underline">+ Add item</button>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={() => { setShowCreate(false); setEditId(null); }}
+              className="px-4 py-2 border border-gray-300 rounded text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button onClick={save}
+              disabled={!name.trim() || checks.every(c => !c.trim())}
+              className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+              {editId ? 'Save Changes' : 'Create Template'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={startCreate}
+          className="w-full py-3 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors">
+          + Create Quick Check Template
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── Equipment Registry Tab ────────────────────────────────────────────────────
 
 interface LocalEquipment {
   id: string; name: string; brand?: string; model?: string; serial?: string;
   barcode?: string; ref?: string; type?: string; category?: string;
   location?: string; container?: string; status: string; deployable: number;
-  notes?: string; tag?: string; d4h_equipment_id?: number;
+  notes?: string; tag?: string; d4h_equipment_id?: number; custom_tags?: string;
 }
 
 const EQ_TYPES = ['Vehicle','Rope','Medical','Radio','Navigation','Pack','Personal','Technical','Other'];
@@ -1023,6 +1424,7 @@ function RegistryTab({ token }: { token: string }) {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [filterContainer, setFilterContainer] = useState('');
+  const [filterTag, setFilterTag] = useState('');
   const [containers, setContainers] = useState<string[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId]   = useState<string | null>(null);
@@ -1106,13 +1508,23 @@ function RegistryTab({ token }: { token: string }) {
 
   useEffect(() => { load(); }, []);
 
+  // Compute all unique tags from items
+  const allTags = Array.from(new Set(
+    items.flatMap(i => (i.custom_tags ? i.custom_tags.split(',').map(t => t.trim()).filter(Boolean) : []))
+  )).sort();
+
   const filtered = items.filter(i => {
     if (filterStatus && i.status !== filterStatus) return false;
     if (filterContainer && i.container !== filterContainer) return false;
+    if (filterTag) {
+      const itemTags = (i.custom_tags ?? '').split(',').map(t => t.trim()).filter(Boolean);
+      if (!itemTags.includes(filterTag)) return false;
+    }
     if (search) {
       const s = search.toLowerCase();
       return i.name.toLowerCase().includes(s) || (i.tag ?? '').toLowerCase().includes(s) ||
-             (i.serial ?? '').toLowerCase().includes(s) || (i.container ?? '').toLowerCase().includes(s);
+             (i.serial ?? '').toLowerCase().includes(s) || (i.container ?? '').toLowerCase().includes(s) ||
+             (i.custom_tags ?? '').toLowerCase().includes(s);
     }
     return true;
   });
@@ -1140,6 +1552,13 @@ function RegistryTab({ token }: { token: string }) {
           <option value="">All containers</option>
           {containers.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
+        {allTags.length > 0 && (
+          <select value={filterTag} onChange={e => setFilterTag(e.target.value)}
+            className="border border-gray-300 rounded p-2 text-sm">
+            <option value="">All labels</option>
+            {allTags.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        )}
         <button onClick={() => setShowAdd(true)}
           className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">+ Add</button>
         <button onClick={importD4H} disabled={importing}
@@ -1232,7 +1651,12 @@ function RegistryTab({ token }: { token: string }) {
               <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} className="w-3.5 h-3.5 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="font-medium text-gray-800 truncate">{item.name}</div>
-                <div className="text-xs text-gray-400">{[item.tag, item.serial, item.ref].filter(Boolean).join(' · ')}</div>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs text-gray-400">{[item.tag, item.serial, item.ref].filter(Boolean).join(' · ')}</span>
+                  {item.custom_tags && item.custom_tags.split(',').map(t => t.trim()).filter(Boolean).map(t => (
+                    <span key={t} className="text-xs px-1.5 py-0 bg-purple-100 text-purple-700 rounded-full">{t}</span>
+                  ))}
+                </div>
               </div>
               <span className="w-24 text-xs text-gray-500 hidden sm:block truncate">{item.type ?? '—'}</span>
               <span className="w-28 text-xs text-gray-500 hidden md:block truncate">{item.container ?? '—'}</span>
@@ -1275,7 +1699,19 @@ function EquipmentForm({ token, existing, onSaved, onCancel, inline }: {
     notes: existing?.notes ?? '',
     tag: existing?.tag ?? '',
   });
+  const [tagInput, setTagInput] = useState('');
+  const [tags, setTags] = useState<string[]>(() =>
+    existing?.custom_tags ? existing.custom_tags.split(',').map(t => t.trim()).filter(Boolean) : []
+  );
   const [saving, setSaving] = useState(false);
+
+  function addTag(raw: string) {
+    const t = raw.trim().replace(/,/g, '');
+    if (t && !tags.includes(t)) setTags(prev => [...prev, t]);
+    setTagInput('');
+  }
+
+  function removeTag(t: string) { setTags(prev => prev.filter(x => x !== t)); }
 
   async function save() {
     if (!form.name.trim()) return;
@@ -1285,7 +1721,7 @@ function EquipmentForm({ token, existing, onSaved, onCancel, inline }: {
     await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ ...form, deployable: form.deployable ? 1 : 0 }),
+      body: JSON.stringify({ ...form, deployable: form.deployable ? 1 : 0, custom_tags: tags.join(',') || null }),
     });
     setSaving(false);
     onSaved();
@@ -1328,6 +1764,29 @@ function EquipmentForm({ token, existing, onSaved, onCancel, inline }: {
           <label htmlFor="deployable" className="text-sm text-gray-700">Deployable</label>
         </div>
       </div>
+
+      {/* Custom tags */}
+      <div>
+        <label className="block text-xs text-gray-500 mb-1">Labels / Tags <span className="text-gray-400">(for grouping)</span></label>
+        <div className="flex flex-wrap gap-1.5 mb-1.5">
+          {tags.map(t => (
+            <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
+              {t}
+              <button type="button" onClick={() => removeTag(t)} className="hover:text-red-600 leading-none">×</button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input value={tagInput} onChange={e => setTagInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addTag(tagInput); } }}
+            placeholder="Add label (Enter to add)…"
+            className={`flex-1 ${cls}`} />
+          <button type="button" onClick={() => addTag(tagInput)}
+            className="px-3 py-1.5 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50"
+            disabled={!tagInput.trim()}>Add</button>
+        </div>
+      </div>
+
       <div className="flex gap-2 justify-end">
         <button onClick={onCancel} className="px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
         <button onClick={save} disabled={saving || !form.name.trim()}

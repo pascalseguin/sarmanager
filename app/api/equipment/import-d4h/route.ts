@@ -9,8 +9,8 @@ export async function POST(req: NextRequest) {
     const { token, teamId } = await req.json();
     if (!token) return NextResponse.json({ error: 'd4hToken required' }, { status: 400 });
 
-    // Fetch equipment from D4H v3
-    const baseUrl = `https://api.d4h.com/v3/team/${teamId ?? ''}/equipment`;
+    // Fetch equipment from D4H v3 (Canadian base URL)
+    const baseUrl = `https://api.team-manager.ca.d4h.com/v3/team/${teamId ?? ''}/equipment`;
     const res = await fetch(`${baseUrl}?size=1000`, {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
     });
@@ -21,18 +21,31 @@ export async function POST(req: NextRequest) {
     const data = await res.json();
     const items: any[] = data?.data ?? data?.results ?? data?.equipment ?? [];
 
+    // Safely extract a string/null from a D4H field that may be a nested object
+    function toStr(v: unknown): string | null {
+      if (v == null) return null;
+      if (typeof v === 'string') return v || null;
+      if (typeof v === 'number') return String(v);
+      if (typeof v === 'object') {
+        const o = v as Record<string, unknown>;
+        const s = o.title ?? o.name ?? o.label ?? null;
+        return s != null ? String(s) : null;
+      }
+      return null;
+    }
+
     let created = 0;
     let updated = 0;
     for (const item of items) {
       const d4hId = item.id ?? item.equipment_id;
-      const name  = item.title ?? item.name ?? 'Unknown';
-      const ref   = item.ref ?? item.reference ?? null;
-      const serial = item.serial_number ?? item.serial ?? null;
-      const brand  = item.manufacturer ?? item.brand ?? null;
-      const model  = item.model ?? null;
-      const category = item.category?.title ?? item.category ?? null;
-      const location = item.location?.title ?? item.location ?? null;
-      const container = item.location?.parent?.title ?? null;
+      const name  = toStr(item.title ?? item.name) ?? 'Unknown';
+      const ref   = toStr(item.ref ?? item.reference);
+      const serial = toStr(item.serial_number ?? item.serial);
+      const brand  = toStr(item.manufacturer ?? item.brand);
+      const model  = toStr(item.model);
+      const category = toStr(item.category);
+      const location = toStr(item.location?.title != null ? item.location.title : item.location);
+      const container = toStr(item.location?.parent?.title ?? item.location?.parent);
       const status = item.status === 'UNSERVICEABLE' ? 'retired' : 'available';
 
       const existing = db.prepare('SELECT id FROM equipment WHERE d4h_equipment_id = ?').get(d4hId);

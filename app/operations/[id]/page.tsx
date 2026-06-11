@@ -29,21 +29,19 @@ export default function OperationDetailPage({ params }: { params: Promise<{ id: 
   }, [user, id]);
 
   if (loading || !user) return null;
-  if (fetchError) return <div className="min-h-screen bg-gray-100 flex items-center justify-center"><p className="text-red-500">{fetchError}</p></div>;
-  if (!op) return <div className="min-h-screen bg-gray-100 flex items-center justify-center"><p className="text-gray-500">Loading…</p></div>;
+  if (fetchError) return <div className="app-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><p style={{ color: 'var(--danger)' }}>{fetchError}</p></div>;
+  if (!op) return <div className="app-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}><p style={{ color: 'var(--text-muted)' }}>Loading…</p></div>;
 
   return (
-    <div className="min-h-screen bg-gray-100 p-4">
-      <div className="max-w-5xl mx-auto">
-        <div className="flex items-center gap-3 mb-4">
-          <button onClick={() => router.push('/operations')} className="text-sm text-gray-500 hover:text-gray-700">
-            ← Operations
-          </button>
-          <span className="text-gray-400">/</span>
-          <span className="text-sm font-medium text-gray-700 truncate">{op.name}</span>
-        </div>
-        <OperationRollout op={op} onUpdated={setOp} />
+    <div className="app-content panel">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, fontSize: 13 }}>
+        <button onClick={() => router.push('/operations')} style={{ color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+          ← Operations
+        </button>
+        <span style={{ color: 'var(--border)' }}>/</span>
+        <span style={{ color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{op.name}</span>
       </div>
+      <OperationRollout op={op} onUpdated={setOp} />
     </div>
   );
 }
