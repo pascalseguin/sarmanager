@@ -7,8 +7,8 @@ export interface CalTopoSettings {
   secret: string;
   accountId: string;
   folderId: string;
-  ippFolderId: string;   // Folder for IPP/LKP/PLS markers ("00 - Critical Incident Info")
-  ringFolderId: string;  // Folder for ISRID rings ("02 - LPB")
+  ippFolderId: string;
+  ringFolderId: string;
   defaultGeoJSON: GeoJSON.FeatureCollection | null;
   defaultGeoJSONName: string;
   d4hToken: string;
@@ -39,7 +39,9 @@ interface SettingsContextType {
   isConfigured: boolean;
 }
 
-const STORAGE_KEY = 'sarmanager_caltopo_settings';
+// Legacy localStorage key — used only for one-time migration
+const LEGACY_KEY  = 'sarmanager_caltopo_settings';
+const SESSION_KEY = 'sarmanager_session_token';
 
 const defaultSettings: CalTopoSettings = {
   credentialId: '',
@@ -69,22 +71,57 @@ const defaultSettings: CalTopoSettings = {
 
 const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
 
+async function saveToServer(settings: CalTopoSettings, token: string) {
+  await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ settings }),
+  });
+}
+
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<CalTopoSettings>(defaultSettings);
 
+  function loadFromServer(token: string) {
+    fetch('/api/settings', { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.settings && Object.keys(data.settings).length > 0) {
+          setSettings({ ...defaultSettings, ...data.settings });
+        } else {
+          // No server settings yet — migrate from localStorage if present
+          const legacy = localStorage.getItem(LEGACY_KEY);
+          if (legacy) {
+            try {
+              const parsed = JSON.parse(legacy);
+              const merged = { ...defaultSettings, ...parsed };
+              setSettings(merged);
+              saveToServer(merged, token).catch(() => {});
+              localStorage.removeItem(LEGACY_KEY);
+            } catch { /* ignore */ }
+          }
+        }
+      })
+      .catch(() => {});
+  }
+
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) setSettings({ ...defaultSettings, ...JSON.parse(stored) });
-    } catch {
-      // ignore
+    const token = localStorage.getItem(SESSION_KEY);
+    if (token) loadFromServer(token);
+
+    function onLogin(e: Event) {
+      const tok = (e as CustomEvent).detail?.token ?? localStorage.getItem(SESSION_KEY);
+      if (tok) loadFromServer(tok);
     }
+    window.addEventListener('sarmanager:login', onLogin);
+    return () => window.removeEventListener('sarmanager:login', onLogin);
   }, []);
 
   const updateSettings = (partial: Partial<CalTopoSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...partial };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      const token = localStorage.getItem(SESSION_KEY);
+      if (token) saveToServer(next, token).catch(() => {});
       return next;
     });
   };

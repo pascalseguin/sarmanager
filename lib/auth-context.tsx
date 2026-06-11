@@ -58,6 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(TOKEN_KEY, data.token);
     setToken(data.token);
     setUser(data.user);
+    window.dispatchEvent(new CustomEvent('sarmanager:login', { detail: { token: data.token } }));
   }
 
   async function logout() {

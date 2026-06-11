@@ -100,6 +100,8 @@ export default function PersonnelPage() {
   const [importMsg, setImportMsg] = useState('');
   const [importError, setImportError] = useState('');
   const [syncingQuals, setSyncingQuals] = useState(false);
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkFields, setBulkFields] = useState({ role: '', status: '', member_status: '', addQuals: [] as string[], removeQuals: [] as string[] });
   const [syncMsg, setSyncMsg] = useState('');
 
   // CSV import
@@ -210,6 +212,32 @@ export default function PersonnelPage() {
     await Promise.all([...selected].map(id => authFetch(`/api/personnel/${id}`, { method: 'DELETE' })));
     setRoster(prev => prev.filter(p => !selected.has(p.id)));
     setSelected(new Set());
+  }
+
+  async function applyBulkEdit() {
+    const patch: Record<string, string> = {};
+    if (bulkFields.role) patch.role = bulkFields.role;
+    if (bulkFields.status) patch.status = bulkFields.status;
+    if (bulkFields.member_status) patch.member_status = bulkFields.member_status;
+    const hasQuals = bulkFields.addQuals.length > 0 || bulkFields.removeQuals.length > 0;
+    for (const id of selected) {
+      const person = roster.find(p => p.id === id);
+      if (!person) continue;
+      const finalPatch: Record<string, string> = { ...patch };
+      if (hasQuals) {
+        const curr = (person.qualifications ?? '').split(',').map(s => s.trim()).filter(Boolean);
+        const next = [...new Set([...curr.filter(q => !bulkFields.removeQuals.includes(q)), ...bulkFields.addQuals])];
+        finalPatch.qualifications = next.join(', ');
+      }
+      if (!Object.keys(finalPatch).length) continue;
+      await authFetch(`/api/personnel/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(finalPatch),
+      });
+    }
+    setBulkEditOpen(false);
+    setBulkFields({ role: '', status: '', member_status: '', addQuals: [], removeQuals: [] });
+    setSelected(new Set());
+    loadRoster();
   }
 
   async function loadD4HMembers() {
@@ -459,8 +487,91 @@ export default function PersonnelPage() {
             {selected.size > 0 && (
               <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2 flex items-center gap-3 text-sm">
                 <span className="font-medium text-blue-700">{selected.size} selected</span>
+                <button onClick={() => setBulkEditOpen(o => !o)} className={`text-blue-600 hover:underline font-medium ${bulkEditOpen ? 'underline' : ''}`}>Edit Fields</button>
                 <button onClick={bulkDelete} className="text-red-500 hover:underline">Delete selected</button>
-                <button onClick={() => setSelected(new Set())} className="ml-auto text-gray-500 hover:underline">Clear</button>
+                <button onClick={() => { setSelected(new Set()); setBulkEditOpen(false); }} className="ml-auto text-gray-500 hover:underline">Clear</button>
+              </div>
+            )}
+
+            {/* Bulk edit panel */}
+            {bulkEditOpen && selected.size > 0 && (
+              <div className="bg-white rounded-xl shadow p-4 border-2 border-blue-300 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-semibold text-gray-800">Edit {selected.size} member{selected.size !== 1 ? 's' : ''}</span>
+                  <span className="text-xs text-gray-400">Leave blank to keep existing values</span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-0.5">Role</label>
+                    <select value={bulkFields.role} onChange={e => setBulkFields(f => ({ ...f, role: e.target.value }))}
+                      className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                      <option value="">— no change —</option>
+                      {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-0.5">Field Status</label>
+                    <select value={bulkFields.status} onChange={e => setBulkFields(f => ({ ...f, status: e.target.value }))}
+                      className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                      <option value="">— no change —</option>
+                      <option value="available">Available</option>
+                      <option value="deployed">Deployed</option>
+                      <option value="off_duty">Off Duty</option>
+                      <option value="pending">Pending</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-0.5">Member Status</label>
+                    <select value={bulkFields.member_status} onChange={e => setBulkFields(f => ({ ...f, member_status: e.target.value }))}
+                      className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                      <option value="">— no change —</option>
+                      <option value="Operational">Operational</option>
+                      <option value="Member In Training">Member In Training</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Add qualifications to all selected</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SAR_QUALS.map(q => {
+                      const on = bulkFields.addQuals.includes(q);
+                      return (
+                        <button key={q} type="button" onClick={() => setBulkFields(f => ({
+                          ...f,
+                          addQuals: on ? f.addQuals.filter(x => x !== q) : [...f.addQuals, q],
+                          removeQuals: f.removeQuals.filter(x => x !== q),
+                        }))} className={`px-2 py-0.5 rounded text-xs border transition-colors ${on ? 'bg-green-600 text-white border-green-600' : 'border-gray-300 text-gray-600 hover:border-green-400'}`}>
+                          + {q}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Remove qualifications from all selected</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SAR_QUALS.map(q => {
+                      const on = bulkFields.removeQuals.includes(q);
+                      return (
+                        <button key={q} type="button" onClick={() => setBulkFields(f => ({
+                          ...f,
+                          removeQuals: on ? f.removeQuals.filter(x => x !== q) : [...f.removeQuals, q],
+                          addQuals: f.addQuals.filter(x => x !== q),
+                        }))} className={`px-2 py-0.5 rounded text-xs border transition-colors ${on ? 'bg-red-600 text-white border-red-600' : 'border-gray-300 text-gray-600 hover:border-red-400'}`}>
+                          − {q}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end pt-1">
+                  <button onClick={() => { setBulkEditOpen(false); setBulkFields({ role: '', status: '', member_status: '', addQuals: [], removeQuals: [] }); }}
+                    className="px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+                  <button onClick={applyBulkEdit}
+                    className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-semibold hover:bg-blue-700">
+                    Apply to {selected.size} member{selected.size !== 1 ? 's' : ''}
+                  </button>
+                </div>
               </div>
             )}
 

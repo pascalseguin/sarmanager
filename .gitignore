@@ -40,8 +40,7 @@
 .DS_Store
 *.pem
 
-# binary / media blobs — not sensitive but not useful in git
-*.mp4
+# binary / media blobs — not senl;
 *.mov
 *.avi
 _archive/media/

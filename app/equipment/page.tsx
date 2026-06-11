@@ -1437,6 +1437,9 @@ function RegistryTab({ token }: { token: string }) {
   const [csvPreview, setCsvPreview] = useState<Record<string,string>[]>([]);
   const [csvImporting, setCsvImporting] = useState(false);
   const [csvMsg, setCsvMsg] = useState('');
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  const [bulkFields, setBulkFields] = useState({ type: '', category: '', container: '', status: '', deployable: '', location: '', notes: '', addTags: [] as string[], removeTags: [] as string[] });
+  const [bulkTagInput, setBulkTagInput] = useState('');
 
   const authHdr = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
@@ -1475,6 +1478,38 @@ function RegistryTab({ token }: { token: string }) {
       body: JSON.stringify({ action, ids: [...selected], ...extra }),
     });
     setSelected(new Set()); load();
+  }
+
+  async function applyBulkEdit() {
+    const patch: Record<string, unknown> = {};
+    if (bulkFields.type)      patch.type      = bulkFields.type;
+    if (bulkFields.category)  patch.category  = bulkFields.category;
+    if (bulkFields.container) patch.container = bulkFields.container;
+    if (bulkFields.status)    patch.status    = bulkFields.status;
+    if (bulkFields.location)  patch.location  = bulkFields.location;
+    if (bulkFields.notes)     patch.notes     = bulkFields.notes;
+    if (bulkFields.deployable === 'yes') patch.deployable = 1;
+    if (bulkFields.deployable === 'no')  patch.deployable = 0;
+    const hasTagChanges = bulkFields.addTags.length > 0 || bulkFields.removeTags.length > 0;
+    for (const id of selected) {
+      const item = items.find(i => i.id === id);
+      if (!item) continue;
+      const finalPatch: Record<string, unknown> = { ...patch };
+      if (hasTagChanges) {
+        const curr = (item.custom_tags ?? '').split(',').map(t => t.trim()).filter(Boolean);
+        const next = [...new Set([...curr.filter(t => !bulkFields.removeTags.includes(t)), ...bulkFields.addTags])];
+        finalPatch.custom_tags = next.join(',') || null;
+      }
+      if (!Object.keys(finalPatch).length) continue;
+      await fetch(`/api/equipment/${id}`, {
+        method: 'PATCH', headers: authHdr, body: JSON.stringify(finalPatch),
+      });
+    }
+    setBulkEditOpen(false);
+    setBulkFields({ type: '', category: '', container: '', status: '', deployable: '', location: '', notes: '', addTags: [], removeTags: [] });
+    setBulkTagInput('');
+    setSelected(new Set());
+    load();
   }
 
   async function deleteItem(id: string) {
@@ -1543,6 +1578,16 @@ function RegistryTab({ token }: { token: string }) {
 
   return (
     <div className="space-y-4">
+      {/* Check-in tip */}
+      <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2.5 text-xs text-blue-700 flex items-start gap-2">
+        <span className="shrink-0 mt-0.5">ℹ</span>
+        <span>
+          <strong>To show an item in the searcher check-in vehicle list:</strong> set its <strong>Type to "Vehicle"</strong> and make sure its status is not <em>retired</em>.
+          Items with Type Vehicle also appear in the Quick Check "Vehicles &amp; Trailers" section.
+          Use <strong>Status = "available"</strong> to mark it ready for deployment.
+        </span>
+      </div>
+
       {/* Toolbar */}
       <div className="bg-white rounded-xl shadow p-4 flex flex-wrap gap-2 items-center">
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name, tag, serial…"
@@ -1592,13 +1637,135 @@ function RegistryTab({ token }: { token: string }) {
       {selected.size > 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-2 flex items-center gap-3 flex-wrap text-sm">
           <span className="font-medium text-blue-700">{selected.size} selected</span>
+          <button onClick={() => setBulkEditOpen(o => !o)} className={`text-blue-600 hover:underline font-medium ${bulkEditOpen ? 'underline' : ''}`}>Edit Fields</button>
           <button onClick={() => bulkAction('status', { status: 'deployed' })} className="text-blue-600 hover:underline">Mark Deployed</button>
           <button onClick={() => bulkAction('status', { status: 'available' })} className="text-blue-600 hover:underline">Mark Available</button>
           <button onClick={() => bulkAction('status', { status: 'retired' })} className="text-blue-600 hover:underline">Mark Retired</button>
           <button onClick={() => bulkAction('deployable', { deployable: true })} className="text-blue-600 hover:underline">Set Deployable</button>
           <button onClick={() => { const c = prompt('Container name:'); if (c !== null) bulkAction('container', { container: c || null }); }} className="text-blue-600 hover:underline">Assign Container</button>
           <button onClick={() => { if (confirm(`Delete ${selected.size} items?`)) bulkAction('delete'); }} className="text-red-500 hover:underline">Delete</button>
-          <button onClick={() => setSelected(new Set())} className="ml-auto text-gray-500 hover:underline">Clear</button>
+          <button onClick={() => { setSelected(new Set()); setBulkEditOpen(false); }} className="ml-auto text-gray-500 hover:underline">Clear</button>
+        </div>
+      )}
+
+      {/* Bulk edit panel */}
+      {bulkEditOpen && selected.size > 0 && (
+        <div className="bg-white rounded-xl shadow p-4 border-2 border-blue-300 space-y-3">
+          <div className="flex justify-between items-center">
+            <span className="text-sm font-semibold text-gray-800">Edit {selected.size} item{selected.size !== 1 ? 's' : ''}</span>
+            <span className="text-xs text-gray-400">Leave blank to keep existing values</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div>
+              <label className="block text-xs text-gray-500 mb-0.5">Type</label>
+              <select value={bulkFields.type} onChange={e => setBulkFields(f => ({ ...f, type: e.target.value }))}
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">— no change —</option>
+                {EQ_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-0.5">Category</label>
+              <input value={bulkFields.category} onChange={e => setBulkFields(f => ({ ...f, category: e.target.value }))}
+                placeholder="(keep existing)" list="bulk-cats"
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <datalist id="bulk-cats">{allCategories.map(c => <option key={c} value={c} />)}</datalist>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-0.5">Container</label>
+              <input value={bulkFields.container} onChange={e => setBulkFields(f => ({ ...f, container: e.target.value }))}
+                placeholder="(keep existing)" list="bulk-containers"
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <datalist id="bulk-containers">{containers.map(c => <option key={c} value={c} />)}</datalist>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-0.5">Status</label>
+              <select value={bulkFields.status} onChange={e => setBulkFields(f => ({ ...f, status: e.target.value }))}
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">— no change —</option>
+                {EQ_STATUS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-0.5">Deployable</label>
+              <select value={bulkFields.deployable} onChange={e => setBulkFields(f => ({ ...f, deployable: e.target.value }))}
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">— no change —</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-0.5">Location</label>
+              <input value={bulkFields.location} onChange={e => setBulkFields(f => ({ ...f, location: e.target.value }))}
+                placeholder="(keep existing)"
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-500 mb-0.5">Notes</label>
+              <input value={bulkFields.notes} onChange={e => setBulkFields(f => ({ ...f, notes: e.target.value }))}
+                placeholder="(keep existing)"
+                className="w-full border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Add labels/tags to all selected</label>
+            <div className="flex gap-2 mb-1.5">
+              <input value={bulkTagInput} onChange={e => setBulkTagInput(e.target.value)}
+                onKeyDown={e => {
+                  if ((e.key === 'Enter' || e.key === ',') && bulkTagInput.trim()) {
+                    e.preventDefault();
+                    const t = bulkTagInput.trim().replace(/,/g, '');
+                    if (t && !bulkFields.addTags.includes(t)) setBulkFields(f => ({ ...f, addTags: [...f.addTags, t], removeTags: f.removeTags.filter(x => x !== t) }));
+                    setBulkTagInput('');
+                  }
+                }}
+                placeholder="Type tag + Enter to add…"
+                className="flex-1 border border-gray-300 rounded p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <button type="button" onClick={() => {
+                const t = bulkTagInput.trim().replace(/,/g, '');
+                if (t && !bulkFields.addTags.includes(t)) setBulkFields(f => ({ ...f, addTags: [...f.addTags, t], removeTags: f.removeTags.filter(x => x !== t) }));
+                setBulkTagInput('');
+              }} disabled={!bulkTagInput.trim()} className="px-3 py-1.5 bg-purple-600 text-white rounded text-sm hover:bg-purple-700 disabled:opacity-50">Add</button>
+            </div>
+            {bulkFields.addTags.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {bulkFields.addTags.map(t => (
+                  <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                    + {t}
+                    <button onClick={() => setBulkFields(f => ({ ...f, addTags: f.addTags.filter(x => x !== t) }))} className="hover:text-red-600 leading-none">×</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+          {allTags.length > 0 && (
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Remove labels/tags from all selected</label>
+              <div className="flex flex-wrap gap-1.5">
+                {allTags.map(t => {
+                  const on = bulkFields.removeTags.includes(t);
+                  return (
+                    <button key={t} type="button" onClick={() => setBulkFields(f => ({
+                      ...f,
+                      removeTags: on ? f.removeTags.filter(x => x !== t) : [...f.removeTags, t],
+                      addTags: f.addTags.filter(x => x !== t),
+                    }))} className={`px-2 py-0.5 rounded text-xs border transition-colors ${on ? 'bg-red-600 text-white border-red-600' : 'border-gray-300 text-gray-600 hover:border-red-400'}`}>
+                      − {t}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div className="flex gap-2 justify-end pt-1">
+            <button onClick={() => { setBulkEditOpen(false); setBulkFields({ type: '', category: '', container: '', status: '', deployable: '', location: '', notes: '', addTags: [], removeTags: [] }); setBulkTagInput(''); }}
+              className="px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button onClick={applyBulkEdit}
+              className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm font-semibold hover:bg-blue-700">
+              Apply to {selected.size} item{selected.size !== 1 ? 's' : ''}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1793,6 +1960,11 @@ function EquipmentForm({ token, existing, onSaved, onCancel, inline }: {
             <option value="">Select…</option>
             {EQ_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
+          {form.type === 'Vehicle' ? (
+            <p className="text-xs text-green-600 mt-0.5">✓ Will appear in searcher check-in vehicle list</p>
+          ) : (
+            <p className="text-xs text-gray-400 mt-0.5">Set to <strong>Vehicle</strong> to appear in the check-in vehicle selection</p>
+          )}
         </div>
         <div>
           <label className="block text-xs text-gray-500 mb-0.5">Status</label>
