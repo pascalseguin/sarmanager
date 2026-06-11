@@ -1209,11 +1209,18 @@ interface OpEquipLog {
   itemIds: number[];
 }
 
-const DEPLOY_PRESETS_KEY = 'sarmanager_deploy_presets';
-const OP_EQ_LOG_KEY      = 'sarmanager_op_equipment_logs';
+const DEPLOY_PRESETS_KEY     = 'sarmanager_deploy_presets';
+const OP_EQ_LOG_KEY          = 'sarmanager_op_equipment_logs';
+const DEPLOY_PRESETS_VERSION = 'sarmanager_deploy_presets_v2'; // bump to clear old hardcoded defaults
 
 function loadDeployPresets(): DeployPreset[] {
   try {
+    // One-time migration: clear presets that were saved from old hardcoded DEFAULT_PRESETS
+    if (!localStorage.getItem(DEPLOY_PRESETS_VERSION)) {
+      localStorage.removeItem(DEPLOY_PRESETS_KEY);
+      localStorage.setItem(DEPLOY_PRESETS_VERSION, '1');
+      return [];
+    }
     const stored = JSON.parse(localStorage.getItem(DEPLOY_PRESETS_KEY) ?? 'null');
     if (Array.isArray(stored)) return stored;
   } catch { /* empty */ }
@@ -2131,6 +2138,7 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
       if (!res.ok) throw new Error(data.error ?? 'Failed to load map');
       if (data.features?.length > 0) setFeatures(data.features);
       setLastMapRefresh(new Date());
+      setMapError('');
     } catch (e: unknown) {
       setMapError(e instanceof Error ? e.message : 'Map load failed');
     } finally {
@@ -2142,11 +2150,36 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
   // If we have a local snapshot already, use it immediately without hitting CalTopo API
   useEffect(() => {
     loadBoard();
+    // Priority 1: stored local snapshot
+    let gotSnapshot = false;
     if ((op as any).caltopo_features) {
       try {
         const parsed = JSON.parse((op as any).caltopo_features);
-        setFeatures(parsed?.features ?? []);
-      } catch { /* fall through to API load */ }
+        const snapshotFeatures = parsed?.features ?? [];
+        if (snapshotFeatures.length > 0) { setFeatures(snapshotFeatures); gotSnapshot = true; }
+      } catch { /* fall through */ }
+    }
+    // Priority 2: rebuild IPP marker + rings from op data so map is never blank
+    if (!gotSnapshot && op.caltopo_map_id) {
+      const ippLat = op.ipp_type === 'pls' ? op.pls_lat : op.latitude;
+      const ippLon = op.ipp_type === 'pls' ? op.pls_lon : op.longitude;
+      if (ippLat && ippLon) {
+        const profile = ISRID[op.subject_category ?? ''] ?? ISRID.hiker;
+        const subjectName = op.lost_person_name ?? 'Subject';
+        const ippLabel = op.ipp_type === 'pls' ? 'PLS (IPP)' : 'LKP (IPP)';
+        const fallbackFeatures: object[] = [
+          { type: 'Feature', geometry: { type: 'Point', coordinates: [ippLon, ippLat] },
+            properties: { title: `${ippLabel} – ${subjectName}`, color: '#FF6B35', class: 'Marker' } },
+        ];
+        const RING_COLORS: Record<number, string> = { 25: '#FF0000', 50: '#FF3300', 75: '#FF8800', 95: '#FFCC00' };
+        const ringPcts = settings.lpbRingPcts?.length ? settings.lpbRingPcts : [50, 75, 95];
+        for (const { pct, km } of profile.distances.filter((d: { pct: number }) => ringPcts.includes(d.pct))) {
+          const ring = circlePolygon(ippLat, ippLon, km);
+          ring.properties = { title: `${pct}% (${km}km)`, stroke: RING_COLORS[pct] ?? '#aaa', 'stroke-width': 2, fill: RING_COLORS[pct] ?? '#aaa', 'fill-opacity': 0 };
+          fallbackFeatures.push(ring);
+        }
+        setFeatures(fallbackFeatures);
+      }
     }
     loadMap();
   }, [op.id, op.caltopo_map_id]);

@@ -119,8 +119,9 @@ export async function POST(req: NextRequest) {
     if (action === 'createIncident') {
       const { title, description, startsAt, endsAt } = body;
       const teamId = await getTeamId(token, teamIdOverride);
+      // D4H v3 uses "name" for incidents (not "title")
       const payload: Record<string, unknown> = {
-        title,
+        name: title,
         description,
         startsAt: startsAt ?? new Date().toISOString(),
       };
@@ -134,8 +135,9 @@ export async function POST(req: NextRequest) {
     if (action === 'createExercise') {
       const { title, description, startsAt, endsAt } = body;
       const teamId = await getTeamId(token, teamIdOverride);
+      // D4H v3 uses "name" for exercises (not "title")
       const payload: Record<string, unknown> = {
-        title,
+        name: title,
         description,
         startsAt: startsAt ?? new Date().toISOString(),
       };
@@ -150,7 +152,7 @@ export async function POST(req: NextRequest) {
       const { incidentId, title, description } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const payload: Record<string, unknown> = {};
-      if (title !== undefined)       payload.title = title;
+      if (title !== undefined)       payload.name = title;
       if (description !== undefined) payload.description = description;
       const data = await d4hFetch(token, `/v3/team/${teamId}/incidents/${incidentId}`, 'PATCH', payload);
       return NextResponse.json({ incident: data?.data ?? data });
@@ -161,7 +163,7 @@ export async function POST(req: NextRequest) {
       const { exerciseId, title, description } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const payload: Record<string, unknown> = {};
-      if (title !== undefined)       payload.title = title;
+      if (title !== undefined)       payload.name = title;
       if (description !== undefined) payload.description = description;
       const data = await d4hFetch(token, `/v3/team/${teamId}/exercises/${exerciseId}`, 'PATCH', payload);
       return NextResponse.json({ exercise: data?.data ?? data });
@@ -203,7 +205,7 @@ export async function POST(req: NextRequest) {
       // Fetch members, custom status labels, and qual assignments in parallel
       // Try member-qualifications; fall back to member-awards (different D4H orgs use different modules)
       const [data, customStatusData, qualsData, awardsData] = await Promise.all([
-        d4hFetch(token, `/v3/team/${teamId}/members?size=500&status=OPERATIONAL,NON_OPERATIONAL`),
+        d4hFetch(token, `/v3/team/${teamId}/members?size=500`),
         d4hFetch(token, `/v3/team/${teamId}/member-custom-statuses?size=100`).catch(() => ({ results: [] })),
         d4hFetch(token, `/v3/team/${teamId}/member-qualifications?size=500`).catch(() => ({ results: [] })),
         d4hFetch(token, `/v3/team/${teamId}/member-awards?size=500`).catch(() => ({ results: [] })),

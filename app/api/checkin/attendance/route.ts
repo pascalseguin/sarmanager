@@ -7,10 +7,11 @@ async function postD4HAttendance(d4hMemberId: number, activityId: number): Promi
     const teamRow  = db.prepare("SELECT value FROM config WHERE key = 'd4h_team_id'").get() as any;
     const token = tokenRow?.value; const teamId = teamRow?.value;
     if (!token || !teamId) return null;
-    const res = await fetch(`https://api.d4h.com/v3/team/${teamId}/activities/${activityId}/attendees`, {
+    // D4H v3 Canadian API — POST to /attendance with memberId + activityId
+    const res = await fetch(`https://api.team-manager.ca.d4h.com/v3/team/${teamId}/attendance`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ member_id: d4hMemberId, status: 'Attending' }),
+      body: JSON.stringify({ memberId: d4hMemberId, activityId, status: 'Attending' }),
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -30,11 +31,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'operationId, searcherName, and dropDeadTime are required.' }, { status: 400 });
     }
 
-    // Best-effort D4H attendance posting (fail-open)
+    // Best-effort D4H attendance posting (fail-open) — works for both incidents and exercises
     let d4hAttendanceId: number | null = null;
-    const op = db.prepare("SELECT d4h_incident_id, created_by FROM operations WHERE id = ?").get(operationId) as any;
-    if (d4hMemberId && op?.d4h_incident_id) {
-      d4hAttendanceId = await postD4HAttendance(Number(d4hMemberId), Number(op.d4h_incident_id));
+    const op = db.prepare("SELECT d4h_incident_id, d4h_exercise_id, created_by FROM operations WHERE id = ?").get(operationId) as any;
+    const d4hActivityId = op?.d4h_incident_id ?? op?.d4h_exercise_id ?? null;
+    if (d4hMemberId && d4hActivityId) {
+      d4hAttendanceId = await postD4HAttendance(Number(d4hMemberId), Number(d4hActivityId));
     }
 
     const existing = db.prepare("SELECT id FROM searcher_checkins WHERE operation_id=? AND searcher_name=?").get(operationId, searcherName) as any;

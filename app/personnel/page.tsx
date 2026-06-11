@@ -98,6 +98,7 @@ export default function PersonnelPage() {
   const [selectedD4H, setSelectedD4H] = useState<Set<number>>(new Set());
   const [importing, setImporting] = useState(false);
   const [importMsg, setImportMsg] = useState('');
+  const [importError, setImportError] = useState('');
   const [syncingQuals, setSyncingQuals] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
 
@@ -212,15 +213,16 @@ export default function PersonnelPage() {
   }
 
   async function loadD4HMembers() {
-    if (!settings.d4hToken) { setImportMsg('D4H token not configured.'); return; }
-    setLoadingD4H(true); setImportMsg('');
+    if (!settings.d4hToken) { setImportError('D4H token not configured in Settings.'); return; }
+    setLoadingD4H(true); setImportError(''); setImportMsg('');
     try {
       const res = await fetch('/api/d4h', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: d4hBody('getMembers'),
       });
       const data = await res.json();
-      setD4hMembers((data.members ?? []).map((m: any) => ({
+      if (!res.ok) throw new Error(data.error ?? `D4H returned ${res.status}`);
+      const members = (data.members ?? []).map((m: any) => ({
         id: m.id,
         name: m.name,
         status: m.status ?? '',
@@ -228,8 +230,10 @@ export default function PersonnelPage() {
         customStatusTitle: m.customStatusTitle ?? undefined,
         qualifications: m.qualifications ?? [],
         phone: m.phone ?? undefined,
-      })));
-    } catch { setImportMsg('Failed to load D4H members.'); }
+      }));
+      if (members.length === 0) throw new Error('D4H returned no members — check your token and team ID in Settings.');
+      setD4hMembers(members);
+    } catch (e: unknown) { setImportError(e instanceof Error ? e.message : 'Failed to load D4H members.'); }
     finally { setLoadingD4H(false); }
   }
 
@@ -608,9 +612,14 @@ export default function PersonnelPage() {
               <div className="bg-white rounded-xl shadow p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="font-semibold text-gray-800 text-sm">Import from D4H</div>
-                  {importMsg && <span className="text-xs text-green-700">{importMsg}</span>}
                 </div>
                 {loadingD4H && <p className="text-sm text-gray-500">Loading members…</p>}
+                {importError && !loadingD4H && (
+                  <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3">{importError}</div>
+                )}
+                {importMsg && !loadingD4H && (
+                  <div className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 mb-3">{importMsg}</div>
+                )}
                 {d4hMembers.length > 0 && (
                   <>
                     <div className="flex gap-2 mb-2 text-xs flex-wrap">

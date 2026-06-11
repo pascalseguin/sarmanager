@@ -75,6 +75,12 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
     if (!confirm('This will permanently close the operation. Continue?')) return;
     setClosing(true);
     try {
+      // Download all generated documents before closing
+      for (const doc of DOCS) {
+        const text = doc.fn();
+        if (text) downloadText(text, `${op!.name}_${doc.id}.txt`);
+      }
+
       await authFetch(`/api/operations/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -105,6 +111,14 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
     navigator.clipboard.writeText(text);
     setCopied(key);
     setTimeout(() => setCopied(''), 2500);
+  }
+
+  function downloadText(text: string, filename: string) {
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
   }
 
   // ── Document generators ────────────────────────────────────────────────────
@@ -433,10 +447,16 @@ export default function ClosePage({ params }: { params: Promise<{ id: string }> 
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-medium text-gray-700">{doc.label}</span>
-                  <button onClick={() => copy(text, doc.id)}
-                    className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-semibold hover:bg-blue-700 transition-colors">
-                    {copied === doc.id ? '✓ Copied' : 'Copy to clipboard'}
-                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={() => copy(text, doc.id)}
+                      className="px-3 py-1 border border-gray-300 rounded text-xs font-semibold hover:bg-gray-50 transition-colors">
+                      {copied === doc.id ? '✓ Copied' : 'Copy'}
+                    </button>
+                    <button onClick={() => downloadText(text, `${op!.name}_${doc.id}.txt`)}
+                      className="px-3 py-1 bg-blue-600 text-white rounded text-xs font-semibold hover:bg-blue-700 transition-colors">
+                      Download
+                    </button>
+                  </div>
                 </div>
                 <pre className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-xs font-mono whitespace-pre-wrap text-gray-800 leading-relaxed max-h-80 overflow-y-auto">
                   {text}

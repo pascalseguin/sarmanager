@@ -1425,6 +1425,8 @@ function RegistryTab({ token }: { token: string }) {
   const [filterStatus, setFilterStatus] = useState('');
   const [filterContainer, setFilterContainer] = useState('');
   const [filterTag, setFilterTag] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
+  const [groupByCategory, setGroupByCategory] = useState(true);
   const [containers, setContainers] = useState<string[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId]   = useState<string | null>(null);
@@ -1459,7 +1461,8 @@ function RegistryTab({ token }: { token: string }) {
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
-      setImportMsg(`✓ ${d.created} created, ${d.updated} updated (${d.total} total from D4H)`);
+      const sampleInfo = d.rawSample ? ` — sample keys: ${Object.keys(d.rawSample).join(', ')}` : '';
+      setImportMsg(`✓ ${d.created} created, ${d.updated} updated (${d.total} total from D4H)${sampleInfo}`);
       load();
     } catch (e: unknown) { setImportMsg(e instanceof Error ? e.message : 'Import failed'); }
     finally { setImporting(false); }
@@ -1508,14 +1511,16 @@ function RegistryTab({ token }: { token: string }) {
 
   useEffect(() => { load(); }, []);
 
-  // Compute all unique tags from items
+  // Compute all unique tags and categories from items
   const allTags = Array.from(new Set(
     items.flatMap(i => (i.custom_tags ? i.custom_tags.split(',').map(t => t.trim()).filter(Boolean) : []))
   )).sort();
+  const allCategories = Array.from(new Set(items.map(i => i.category).filter(Boolean) as string[])).sort();
 
   const filtered = items.filter(i => {
     if (filterStatus && i.status !== filterStatus) return false;
     if (filterContainer && i.container !== filterContainer) return false;
+    if (filterCategory && i.category !== filterCategory) return false;
     if (filterTag) {
       const itemTags = (i.custom_tags ?? '').split(',').map(t => t.trim()).filter(Boolean);
       if (!itemTags.includes(filterTag)) return false;
@@ -1524,7 +1529,7 @@ function RegistryTab({ token }: { token: string }) {
       const s = search.toLowerCase();
       return i.name.toLowerCase().includes(s) || (i.tag ?? '').toLowerCase().includes(s) ||
              (i.serial ?? '').toLowerCase().includes(s) || (i.container ?? '').toLowerCase().includes(s) ||
-             (i.custom_tags ?? '').toLowerCase().includes(s);
+             (i.custom_tags ?? '').toLowerCase().includes(s) || (i.category ?? '').toLowerCase().includes(s);
     }
     return true;
   });
@@ -1547,6 +1552,13 @@ function RegistryTab({ token }: { token: string }) {
           <option value="">All statuses</option>
           {EQ_STATUS.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
+        {allCategories.length > 0 && (
+          <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
+            className="border border-gray-300 rounded p-2 text-sm">
+            <option value="">All categories</option>
+            {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
         <select value={filterContainer} onChange={e => setFilterContainer(e.target.value)}
           className="border border-gray-300 rounded p-2 text-sm">
           <option value="">All containers</option>
@@ -1558,6 +1570,12 @@ function RegistryTab({ token }: { token: string }) {
             <option value="">All labels</option>
             {allTags.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
+        )}
+        {allCategories.length > 0 && (
+          <button onClick={() => setGroupByCategory(g => !g)}
+            className={`px-3 py-2 border rounded text-sm ${groupByCategory ? 'bg-blue-50 border-blue-400 text-blue-700 font-medium' : 'border-gray-300 hover:bg-gray-50'}`}>
+            Group by category
+          </button>
         )}
         <button onClick={() => setShowAdd(true)}
           className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">+ Add</button>
@@ -1635,45 +1653,69 @@ function RegistryTab({ token }: { token: string }) {
             {items.length === 0 ? 'No equipment yet — add one or sync from D4H.' : 'No items match the filter.'}
           </div>
         )}
-        {filtered.map(item => (
-          editId === item.id ? (
-            <div key={item.id} className="border-b">
-              <EquipmentForm
-                token={token}
-                existing={item}
-                onSaved={() => { setEditId(null); load(); }}
-                onCancel={() => setEditId(null)}
-                inline
-              />
-            </div>
-          ) : (
-            <div key={item.id} className={`flex items-center gap-3 px-4 py-2.5 border-b text-sm hover:bg-gray-50 ${selected.has(item.id) ? 'bg-blue-50' : ''}`}>
-              <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} className="w-3.5 h-3.5 shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="font-medium text-gray-800 truncate">{item.name}</div>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <span className="text-xs text-gray-400">{[item.tag, item.serial, item.ref].filter(Boolean).join(' · ')}</span>
-                  {item.custom_tags && item.custom_tags.split(',').map(t => t.trim()).filter(Boolean).map(t => (
-                    <span key={t} className="text-xs px-1.5 py-0 bg-purple-100 text-purple-700 rounded-full">{t}</span>
-                  ))}
+        {(() => {
+          function renderRow(item: LocalEquipment) {
+            return editId === item.id ? (
+              <div key={item.id} className="border-b">
+                <EquipmentForm
+                  token={token}
+                  existing={item}
+                  onSaved={() => { setEditId(null); load(); }}
+                  onCancel={() => setEditId(null)}
+                  inline
+                />
+              </div>
+            ) : (
+              <div key={item.id} className={`flex items-center gap-3 px-4 py-2.5 border-b text-sm hover:bg-gray-50 ${selected.has(item.id) ? 'bg-blue-50' : ''}`}>
+                <input type="checkbox" checked={selected.has(item.id)} onChange={() => toggleSelect(item.id)} className="w-3.5 h-3.5 shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-gray-800 truncate">{item.name}</div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-xs text-gray-400">{[item.tag, item.serial, item.ref].filter(Boolean).join(' · ')}</span>
+                    {item.custom_tags && item.custom_tags.split(',').map(t => t.trim()).filter(Boolean).map(t => (
+                      <span key={t} className="text-xs px-1.5 py-0 bg-purple-100 text-purple-700 rounded-full">{t}</span>
+                    ))}
+                  </div>
+                </div>
+                <span className="w-24 text-xs text-gray-500 hidden sm:block truncate">{item.type ?? '—'}</span>
+                <span className="w-28 text-xs text-gray-500 hidden md:block truncate">{item.container ?? '—'}</span>
+                <span className={`w-20 text-xs font-medium px-2 py-0.5 rounded-full text-center ${
+                  item.status === 'available' ? 'bg-green-100 text-green-700' :
+                  item.status === 'deployed' ? 'bg-blue-100 text-blue-700' :
+                  'bg-gray-100 text-gray-500'}`}>
+                  {item.status}
+                </span>
+                <span className="w-16 text-center text-xs">{item.deployable ? '✓' : '—'}</span>
+                <div className="w-16 flex gap-1 shrink-0">
+                  <button onClick={() => setEditId(item.id)} className="text-xs text-blue-600 hover:underline">Edit</button>
+                  <button onClick={() => deleteItem(item.id)} className="text-xs text-red-400 hover:text-red-600">✕</button>
                 </div>
               </div>
-              <span className="w-24 text-xs text-gray-500 hidden sm:block truncate">{item.type ?? '—'}</span>
-              <span className="w-28 text-xs text-gray-500 hidden md:block truncate">{item.container ?? '—'}</span>
-              <span className={`w-20 text-xs font-medium px-2 py-0.5 rounded-full text-center ${
-                item.status === 'available' ? 'bg-green-100 text-green-700' :
-                item.status === 'deployed' ? 'bg-blue-100 text-blue-700' :
-                'bg-gray-100 text-gray-500'}`}>
-                {item.status}
-              </span>
-              <span className="w-16 text-center text-xs">{item.deployable ? '✓' : '—'}</span>
-              <div className="w-16 flex gap-1 shrink-0">
-                <button onClick={() => setEditId(item.id)} className="text-xs text-blue-600 hover:underline">Edit</button>
-                <button onClick={() => deleteItem(item.id)} className="text-xs text-red-400 hover:text-red-600">✕</button>
+            );
+          }
+
+          if (!groupByCategory) return filtered.map(renderRow);
+
+          // Group by category, uncategorised last
+          const groups = new Map<string, LocalEquipment[]>();
+          for (const item of filtered) {
+            const key = item.category || '(Uncategorised)';
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key)!.push(item);
+          }
+          const sorted = [...groups.entries()].sort(([a], [b]) =>
+            a === '(Uncategorised)' ? 1 : b === '(Uncategorised)' ? -1 : a.localeCompare(b)
+          );
+          return sorted.map(([cat, catItems]) => (
+            <div key={cat}>
+              <div className="px-4 py-1.5 bg-gray-100 border-b text-xs font-bold text-gray-500 uppercase tracking-wide flex items-center justify-between">
+                <span>{cat}</span>
+                <span className="font-normal text-gray-400">{catItems.length} item{catItems.length !== 1 ? 's' : ''}</span>
               </div>
+              {catItems.map(renderRow)}
             </div>
-          )
-        ))}
+          ));
+        })()}
       </div>
     </div>
   );

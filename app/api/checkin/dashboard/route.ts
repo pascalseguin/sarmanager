@@ -21,7 +21,9 @@ export async function GET(req: NextRequest) {
     `).get(personnelId, operationId) ?? null;
   }
 
-  const caltopoUrl = op.caltopo_map_id ? `https://caltopo.com/m/${op.caltopo_map_id}` : null;
+  const caltopoUrl = op.caltopo_map_id
+    ? `https://caltopo.com/m/${op.caltopo_map_id}`
+    : (op.caltopo_map_url ?? null);
 
   const category = ISRID[op.subject_category ?? ''] ?? ISRID['hiker'];
   const elapsed = Math.floor((Date.now() - new Date(op.started_at).getTime()) / 60000);

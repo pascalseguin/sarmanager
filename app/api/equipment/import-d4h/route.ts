@@ -42,13 +42,26 @@ export async function POST(req: NextRequest) {
       if (d4hStatus === 'RETIRED') continue;
 
       const d4hId = item.id ?? item.equipment_id;
-      // Try title first, then ref (e.g. "SEASAR-VHF-R22"), then fall back to a placeholder
-      const name  = toStr(item.title) ?? toStr(item.ref ?? item.reference) ?? `D4H #${d4hId}`;
+      // Name resolution: title > kind/type name (+ref suffix) > brand+model > ref > placeholder
+      const kindTitle = toStr(item.kind?.title ?? item.type?.title ?? item.kind_title ?? item.type_title);
+      const refStr    = toStr(item.ref ?? item.reference);
+      const brandStr  = toStr(item.manufacturer ?? item.brand);
+      const modelStr  = toStr(item.model);
+      const brandModel = [brandStr, modelStr].filter(Boolean).join(' ') || null;
+      const kindWithRef = kindTitle
+        ? (refStr ? `${kindTitle} (${refStr})` : kindTitle)
+        : null;
+      const name = toStr(item.title) ?? kindWithRef ?? brandModel ?? refStr ?? `D4H #${d4hId}`;
       const ref   = toStr(item.ref ?? item.reference);
       const serial = toStr(item.serial_number ?? item.serial);
       const brand  = toStr(item.manufacturer ?? item.brand);
       const model  = toStr(item.model);
-      const category = toStr(item.category);
+      // D4H v3 may return category as singular object, plural array, or nested under kind
+      const categoryRaw = item.category
+        ?? (Array.isArray(item.categories) ? item.categories[0] : null)
+        ?? item.kind?.category
+        ?? item.equipment_category;
+      const category = toStr(categoryRaw);
       const location = toStr(item.location?.title != null ? item.location.title : item.location);
       const container = toStr(item.location?.parent?.title ?? item.location?.parent);
       const status = d4hStatus === 'UNSERVICEABLE' ? 'retired' : 'available';
@@ -68,7 +81,7 @@ export async function POST(req: NextRequest) {
         created++;
       }
     }
-    return NextResponse.json({ created, updated, total: items.length });
+    return NextResponse.json({ created, updated, total: items.length, rawSample: items[0] ?? null });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : 'Server error' }, { status: 500 });
   }
