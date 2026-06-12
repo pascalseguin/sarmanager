@@ -37,12 +37,14 @@ function parseLatLon(input: string): { lat: number; lon: number } | null {
   return { lat, lon };
 }
 
-function CoordField({ label, value, onChange, required, apiKey }: {
+function CoordField({ label, value, onChange, required, apiKey, geocodeCountry, geocodeRegion }: {
   label: string;
   value: string;
   onChange: (utmRaw: string, parsed: { lat: number; lon: number } | null) => void;
   required?: boolean;
   apiKey?: string;
+  geocodeCountry?: string;
+  geocodeRegion?: string;
 }) {
   const [mode, setMode] = useState<CoordMode>('utm');
   const [latlonInput, setLatlonInput] = useState('');
@@ -75,7 +77,9 @@ function CoordField({ label, value, onChange, required, apiKey }: {
     setResults([]);
     try {
       const params = new URLSearchParams({ q: addressInput });
-      if (apiKey?.trim()) params.set('key', apiKey.trim());
+      if (apiKey?.trim())        params.set('key', apiKey.trim());
+      if (geocodeCountry?.trim()) params.set('country', geocodeCountry.trim());
+      if (geocodeRegion?.trim())  params.set('region', geocodeRegion.trim());
       const res = await fetch(`/api/geocode?${params}`);
       if (res.ok) setResults((await res.json()).slice(0, 5));
     } finally {
@@ -219,7 +223,9 @@ function blank() {
     safety_concerns: '',
     subject_category: '',
     name: '',
+    police_file_number: '',
     deployed_preset_ids: [] as string[],
+    ipp_direct_disabled: false,
     // D4H step
     d4h_activity_type: 'incident' as 'incident' | 'exercise',
     d4h_mode: 'create' as 'create' | 'link',
@@ -274,7 +280,8 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
     const d = new Date().toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' })
       .replace(',', '').replace(/ /g, '-').toUpperCase();
     if (!form.d4h_title) {
-      const title = `${d} — ${form.lost_person_name || 'Missing Person'}`;
+      const fileNum = form.police_file_number?.trim();
+      const title = `${fileNum ? fileNum + ' — ' : ''}${d} — ${form.lost_person_name || 'Missing Person'}`;
       set('d4h_title', title);
       if (!form.name) set('name', title);
     }
@@ -317,18 +324,23 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
 
   function autoName(d4hId = '') {
     const template = settings.opNameTemplate || '{location}-{date}-{d4h_id}';
-    const date = new Date().toISOString().slice(0, 10);
-    const rawLoc = form.last_seen_location || form.pls_location || '';
+    const date     = new Date().toISOString().slice(0, 10);
+    const rawLoc   = form.last_seen_location || form.pls_location || '';
     const location = rawLoc.split(',')[0]?.trim() || 'Location';
-    const subject = form.lost_person_name || '';
-    return template
+    const subject  = form.lost_person_name || '';
+    const fileNum  = form.police_file_number?.trim() || '';
+    let name = template
       .replace(/\{location\}/g, location)
       .replace(/\{date\}/g, date)
       .replace(/\{d4h_id\}/g, d4hId)
       .replace(/\{subject\}/g, subject)
+      .replace(/\{file_number\}/g, fileNum)
       .replace(/[-–]{2,}/g, '-')
       .replace(/^[-–\s]+|[-–\s]+$/g, '')
       .trim() || `${location}-${date}`;
+    // If a file number is set but the template doesn't include {file_number}, prepend it
+    if (fileNum && !template.includes('{file_number}')) name = `${fileNum} ${name}`;
+    return name;
   }
 
   function nextStep() {
@@ -451,7 +463,9 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
           d4h_incident_id: d4hIncidentId,
           d4h_exercise_id: d4hExerciseId,
           d4h_activity_type: form.d4h_activity_type,
+          police_file_number: form.police_file_number?.trim() || undefined,
           deployed_presets_json: JSON.stringify(form.deployed_preset_ids),
+          ipp_direct_disabled: form.ipp_direct_disabled ? 1 : 0,
         }),
       });
       const data = await res.json();
@@ -512,6 +526,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         const dateStr = d.toLocaleDateString('en-CA', { day: '2-digit', month: 'short', year: 'numeric' })
           .toUpperCase().replace(/ /g, '-').replace(',', '');
 
+        const fileNum = op.police_file_number?.trim() ?? '';
         const createRes = await fetch('/api/d4h', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -519,7 +534,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
             action: isExercise ? 'createExercise' : 'createIncident',
             token: settings.d4hToken,
             teamId: Number(settings.d4hTeamId),
-            title: `${dateStr} PENDING`,
+            title: `${fileNum ? fileNum + ' — ' : ''}${dateStr} PENDING`,
             description: [
               op.lost_person_name ? `Missing ${[op.lost_person_age ? `${op.lost_person_age}y` : '', op.subject_sex, op.lost_person_name].filter(Boolean).join(' ')}.` : '',
               op.subject_circumstance ? `Circumstance: ${op.subject_circumstance.slice(0, 200)}` : '',
@@ -544,7 +559,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
             token: settings.d4hToken,
             teamId: Number(settings.d4hTeamId),
             [isExercise ? 'exerciseId' : 'incidentId']: activityId,
-            title: `${dateStr} #${activityId}`,
+            title: `${fileNum ? fileNum + ' — ' : ''}${dateStr} #${activityId}`,
           }),
         }).catch(() => {});
 
@@ -593,15 +608,18 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         const locationSlug = rawLocation.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '-');
 
         // Apply op-name template so map title and operation name always match
-        const template = settings.opNameTemplate || '{location}-{date}-{d4h_id}';
-        const mapTitle = template
+        const template    = settings.opNameTemplate || '{location}-{date}-{d4h_id}';
+        const mapFileNum  = cur.police_file_number?.trim() ?? '';
+        let mapTitle = template
           .replace(/\{location\}/g, locationSlug)
           .replace(/\{date\}/g, albertaDate)
           .replace(/\{d4h_id\}/g, d4hId ?? '0000000')
           .replace(/\{subject\}/g, cur.lost_person_name ?? '')
+          .replace(/\{file_number\}/g, mapFileNum)
           .replace(/[-–]{2,}/g, '-')
           .replace(/^[-–\s]+|[-–\s]+$/g, '')
           .trim() || `${locationSlug}-${albertaDate}`;
+        if (mapFileNum && !template.includes('{file_number}')) mapTitle = `${mapFileNum} ${mapTitle}`;
 
         const ctBase = { credentialId: settings.credentialId, secret: settings.secret, accountId: settings.accountId };
         const ct = (action: string, extra: object) => fetch('/api/caltopo', {
@@ -957,6 +975,17 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
               className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
           </div>
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Police File Number</label>
+            <input
+              value={form.police_file_number}
+              onChange={e => set('police_file_number', e.target.value)}
+              placeholder="e.g. 2026-12345"
+              className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="text-xs text-gray-400 mt-0.5">Used in op name, CalTopo map title, and D4H incident/exercise name.</p>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Officer In Charge *</label>
@@ -1104,7 +1133,9 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
             </div>
             <CoordField label="PLS Coordinates (UTM)" value={form.pls_utm}
               onChange={(raw, parsed) => { set('pls_utm', raw); set('pls_lat', parsed?.lat ?? null); set('pls_lon', parsed?.lon ?? null); }}
-              apiKey={settings.hereApiKey} />
+              apiKey={settings.hereApiKey}
+              geocodeCountry={settings.geocodeCountry}
+              geocodeRegion={settings.geocodeRegion} />
           </div>
 
           <div className="border-t pt-4">
@@ -1118,7 +1149,9 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
             </div>
             <CoordField label="LKP Coordinates (UTM)" value={form.lkp_utm}
               onChange={(raw, parsed) => { set('lkp_utm', raw); set('latitude', parsed?.lat ?? null); set('longitude', parsed?.lon ?? null); }}
-              apiKey={settings.hereApiKey} />
+              apiKey={settings.hereApiKey}
+              geocodeCountry={settings.geocodeCountry}
+              geocodeRegion={settings.geocodeRegion} />
           </div>
 
           <div className="border-t pt-4">
@@ -1422,6 +1455,27 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         </div>
       )}
 
+      {/* Check-in settings — shown on step 7 alongside preset selection */}
+      {step === 7 && (
+        <div className="border border-gray-200 rounded-xl p-4 bg-white">
+          <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Check-In Settings</div>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.ipp_direct_disabled}
+              onChange={e => set('ipp_direct_disabled', e.target.checked)}
+              className="mt-0.5 w-4 h-4 accent-red-600 shrink-0"
+            />
+            <div>
+              <div className="text-sm font-medium text-gray-700">Disable "Attend IPP Direct"</div>
+              <div className="text-xs text-gray-400 mt-0.5">
+                Searchers must claim a vehicle seat — no option to go directly to IPP.
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
+
       {/* ── Step 7 (final): EQUIPMENT + REVIEW ── */}
       {/* Equipment picker already rendered above as step === 7 */}
       {/* Review panel appended at bottom of equipment step */}
@@ -1441,7 +1495,9 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
               ['Safety',    form.safety_concerns?.slice(0, 60)],
               ['Profile',   ISRID[form.subject_category]?.label],
               ['D4H',       form.d4h_title ? `${form.d4h_activity_type === 'exercise' ? 'Exercise' : 'Incident'}: ${form.d4h_title.slice(0, 40)}` : undefined],
+              ['File #', form.police_file_number?.trim() || undefined],
               ['Equipment', form.deployed_preset_ids.length ? `${form.deployed_preset_ids.length} preset${form.deployed_preset_ids.length !== 1 ? 's' : ''}` : undefined],
+              ['IPP Direct', form.ipp_direct_disabled ? 'Disabled' : undefined],
             ].map(([k, v]) => v ? (
               <div key={String(k)} className="contents">
                 <span className="text-gray-500 font-medium">{k}</span>

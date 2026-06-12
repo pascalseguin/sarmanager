@@ -31,6 +31,94 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 const inputCls = 'w-full px-2.5 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 text-sm';
 
+// ── Geocode region data ────────────────────────────────────────────────────────
+const GEOCODE_COUNTRIES = [
+  { label: 'Canada',         value: 'ca' },
+  { label: 'United States',  value: 'us' },
+  { label: 'Australia',      value: 'au' },
+  { label: 'New Zealand',    value: 'nz' },
+  { label: 'United Kingdom', value: 'gb' },
+];
+
+const GEOCODE_REGIONS: Record<string, { label: string; value: string }[]> = {
+  ca: [
+    { label: 'Alberta',                value: 'Alberta' },
+    { label: 'British Columbia',       value: 'British Columbia' },
+    { label: 'Manitoba',               value: 'Manitoba' },
+    { label: 'New Brunswick',          value: 'New Brunswick' },
+    { label: 'Newfoundland & Labrador',value: 'Newfoundland and Labrador' },
+    { label: 'Northwest Territories',  value: 'Northwest Territories' },
+    { label: 'Nova Scotia',            value: 'Nova Scotia' },
+    { label: 'Nunavut',                value: 'Nunavut' },
+    { label: 'Ontario',                value: 'Ontario' },
+    { label: 'Prince Edward Island',   value: 'Prince Edward Island' },
+    { label: 'Quebec',                 value: 'Quebec' },
+    { label: 'Saskatchewan',           value: 'Saskatchewan' },
+    { label: 'Yukon',                  value: 'Yukon' },
+  ],
+  us: [
+    { label: 'Alabama', value: 'Alabama' }, { label: 'Alaska', value: 'Alaska' },
+    { label: 'Arizona', value: 'Arizona' }, { label: 'Arkansas', value: 'Arkansas' },
+    { label: 'California', value: 'California' }, { label: 'Colorado', value: 'Colorado' },
+    { label: 'Connecticut', value: 'Connecticut' }, { label: 'Delaware', value: 'Delaware' },
+    { label: 'Florida', value: 'Florida' }, { label: 'Georgia', value: 'Georgia' },
+    { label: 'Hawaii', value: 'Hawaii' }, { label: 'Idaho', value: 'Idaho' },
+    { label: 'Illinois', value: 'Illinois' }, { label: 'Indiana', value: 'Indiana' },
+    { label: 'Iowa', value: 'Iowa' }, { label: 'Kansas', value: 'Kansas' },
+    { label: 'Kentucky', value: 'Kentucky' }, { label: 'Louisiana', value: 'Louisiana' },
+    { label: 'Maine', value: 'Maine' }, { label: 'Maryland', value: 'Maryland' },
+    { label: 'Massachusetts', value: 'Massachusetts' }, { label: 'Michigan', value: 'Michigan' },
+    { label: 'Minnesota', value: 'Minnesota' }, { label: 'Mississippi', value: 'Mississippi' },
+    { label: 'Missouri', value: 'Missouri' }, { label: 'Montana', value: 'Montana' },
+    { label: 'Nebraska', value: 'Nebraska' }, { label: 'Nevada', value: 'Nevada' },
+    { label: 'New Hampshire', value: 'New Hampshire' }, { label: 'New Jersey', value: 'New Jersey' },
+    { label: 'New Mexico', value: 'New Mexico' }, { label: 'New York', value: 'New York' },
+    { label: 'North Carolina', value: 'North Carolina' }, { label: 'North Dakota', value: 'North Dakota' },
+    { label: 'Ohio', value: 'Ohio' }, { label: 'Oklahoma', value: 'Oklahoma' },
+    { label: 'Oregon', value: 'Oregon' }, { label: 'Pennsylvania', value: 'Pennsylvania' },
+    { label: 'Rhode Island', value: 'Rhode Island' }, { label: 'South Carolina', value: 'South Carolina' },
+    { label: 'South Dakota', value: 'South Dakota' }, { label: 'Tennessee', value: 'Tennessee' },
+    { label: 'Texas', value: 'Texas' }, { label: 'Utah', value: 'Utah' },
+    { label: 'Vermont', value: 'Vermont' }, { label: 'Virginia', value: 'Virginia' },
+    { label: 'Washington', value: 'Washington' }, { label: 'West Virginia', value: 'West Virginia' },
+    { label: 'Wisconsin', value: 'Wisconsin' }, { label: 'Wyoming', value: 'Wyoming' },
+  ],
+  au: [
+    { label: 'Australian Capital Territory', value: 'Australian Capital Territory' },
+    { label: 'New South Wales',              value: 'New South Wales' },
+    { label: 'Northern Territory',           value: 'Northern Territory' },
+    { label: 'Queensland',                   value: 'Queensland' },
+    { label: 'South Australia',              value: 'South Australia' },
+    { label: 'Tasmania',                     value: 'Tasmania' },
+    { label: 'Victoria',                     value: 'Victoria' },
+    { label: 'Western Australia',            value: 'Western Australia' },
+  ],
+  nz: [
+    { label: 'Auckland',        value: 'Auckland' },
+    { label: 'Bay of Plenty',   value: 'Bay of Plenty' },
+    { label: 'Canterbury',      value: 'Canterbury' },
+    { label: 'Gisborne',        value: 'Gisborne' },
+    { label: "Hawke's Bay",     value: "Hawke's Bay" },
+    { label: 'Manawatu-Whanganui', value: 'Manawatu-Whanganui' },
+    { label: 'Marlborough',     value: 'Marlborough' },
+    { label: 'Nelson',          value: 'Nelson' },
+    { label: 'Northland',       value: 'Northland' },
+    { label: 'Otago',           value: 'Otago' },
+    { label: 'Southland',       value: 'Southland' },
+    { label: 'Taranaki',        value: 'Taranaki' },
+    { label: 'Tasman',          value: 'Tasman' },
+    { label: 'Waikato',         value: 'Waikato' },
+    { label: 'Wellington',      value: 'Wellington' },
+    { label: 'West Coast',      value: 'West Coast' },
+  ],
+  gb: [
+    { label: 'England',          value: 'England' },
+    { label: 'Northern Ireland', value: 'Northern Ireland' },
+    { label: 'Scotland',         value: 'Scotland' },
+    { label: 'Wales',            value: 'Wales' },
+  ],
+};
+
 export default function SettingsPage() {
   const { settings, updateSettings } = useSettings();
   const { authFetch } = useAuth();
@@ -50,6 +138,8 @@ export default function SettingsPage() {
     d4hTeamId:        settings.d4hTeamId,
     d4hTeamName:      settings.d4hTeamName,
     hereApiKey:       settings.hereApiKey,
+    geocodeCountry:   settings.geocodeCountry ?? '',
+    geocodeRegion:    settings.geocodeRegion ?? '',
     opNameTemplate:   settings.opNameTemplate ?? '{location}-{date}-{d4h_id}',
     orgName:          settings.orgName ?? 'SEASAR',
     orgFullName:      settings.orgFullName ?? 'South Eastern Alberta Search & Rescue',
@@ -73,6 +163,8 @@ export default function SettingsPage() {
       d4hTeamId:        settings.d4hTeamId,
       d4hTeamName:      settings.d4hTeamName,
       hereApiKey:       settings.hereApiKey,
+      geocodeCountry:   settings.geocodeCountry ?? '',
+      geocodeRegion:    settings.geocodeRegion ?? '',
       opNameTemplate:   settings.opNameTemplate ?? '{location}-{date}-{d4h_id}',
       orgName:          settings.orgName ?? 'SEASAR',
       orgFullName:      settings.orgFullName ?? 'South Eastern Alberta Search & Rescue',
@@ -285,11 +377,37 @@ export default function SettingsPage() {
                   <a href="https://developer.here.com/sign-up" target="_blank" rel="noreferrer" className="underline font-medium">developer.here.com/sign-up</a>
                   {' '}— no credit card needed.
                 </p>
-                <Field label="HERE API Key">
-                  <input type="password" value={form.hereApiKey}
-                    onChange={e => setForm(f => ({ ...f, hereApiKey: e.target.value }))}
-                    className={inputCls} />
-                </Field>
+                <div className="space-y-3">
+                  <Field label="HERE API Key">
+                    <input type="password" value={form.hereApiKey}
+                      onChange={e => setForm(f => ({ ...f, hereApiKey: e.target.value }))}
+                      className={inputCls} />
+                  </Field>
+                  <Field label="Search Region — Country" hint="Restricts address lookups to this country and ranks results from the selected province/state first.">
+                    <select
+                      value={form.geocodeCountry}
+                      onChange={e => setForm(f => ({ ...f, geocodeCountry: e.target.value, geocodeRegion: '' }))}
+                      className={inputCls}>
+                      <option value="">Any country</option>
+                      {GEOCODE_COUNTRIES.map(c => (
+                        <option key={c.value} value={c.value}>{c.label}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  {form.geocodeCountry && (GEOCODE_REGIONS[form.geocodeCountry]?.length ?? 0) > 0 && (
+                    <Field label="Search Region — Province / State" hint="Results matching this region are sorted to the top of the list.">
+                      <select
+                        value={form.geocodeRegion}
+                        onChange={e => setForm(f => ({ ...f, geocodeRegion: e.target.value }))}
+                        className={inputCls}>
+                        <option value="">Whole country</option>
+                        {GEOCODE_REGIONS[form.geocodeCountry].map(r => (
+                          <option key={r.value} value={r.value}>{r.label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
+                </div>
               </Card>
 
               {/* Twilio */}
@@ -365,8 +483,8 @@ export default function SettingsPage() {
                   </Field>
                   <div className="flex flex-wrap gap-1">
                     {([
-                      ['{location}', 'PLS location'], ['{date}', 'YYYY-MM-DD'],
-                      ['{d4h_id}', 'D4H incident #'], ['{subject}', 'Subject name'],
+                      ['{file_number}', 'Police file #'], ['{location}', 'PLS location'],
+                      ['{date}', 'YYYY-MM-DD'], ['{d4h_id}', 'D4H incident #'], ['{subject}', 'Subject name'],
                     ] as [string, string][]).map(([token, desc]) => (
                       <button key={token} type="button"
                         onClick={() => setForm(f => ({ ...f, opNameTemplate: f.opNameTemplate + token }))}
@@ -379,6 +497,7 @@ export default function SettingsPage() {
                   <p className="text-xs text-gray-400">
                     Preview: <span className="font-mono text-gray-600">{
                       form.opNameTemplate
+                        .replace('{file_number}', '2026-12345')
                         .replace('{location}', 'Maple Ridge')
                         .replace('{date}', new Date().toISOString().slice(0, 10))
                         .replace('{d4h_id}', '4521')

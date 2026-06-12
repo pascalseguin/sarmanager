@@ -57,6 +57,10 @@ export interface Operation {
   tags?: string[];
   // Deployed equipment (D4H equipment item IDs selected at operation creation)
   deployed_equipment_ids?: number[];
+  // Check-in options
+  ipp_direct_disabled?: number;
+  // Incident identifier assigned by police / RCMP
+  police_file_number?: string;
 }
 
 const KEY = 'sarmanager_operations';

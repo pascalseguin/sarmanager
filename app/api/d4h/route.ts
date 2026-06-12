@@ -1,27 +1,83 @@
+/**
+ * app/api/d4h/route.ts — D4H Team Manager API proxy
+ *
+ * PURPOSE: Proxies all D4H v3 API calls from the client through the server.
+ * This keeps the D4H access token server-side and prevents it from being
+ * embedded in the browser bundle or exposed in network requests visible to
+ * anyone with DevTools open.
+ *
+ * ALL ACTIONS require Search Manager authentication (requireSM guard).
+ *
+ * TOKEN RESOLUTION:
+ *   The D4H token is read in this priority order:
+ *     1. Body-supplied token (for settings page / initial setup)
+ *     2. DB config table key 'd4h_token' (set via /settings)
+ *   This allows the settings UI to test a token before saving it, while
+ *   normal operation reads from the DB so the token is never in client state.
+ *
+ * SECURITY REFERENCES:
+ *   OWASP A01:2021 — Broken Access Control: auth check before any token usage
+ *   OWASP A02:2021 — Cryptographic Failures: token never logged in full
+ *   OWASP A03:2021 — Injection: all D4H calls use the d4hFetch helper which
+ *     passes body as JSON.stringify, never string-concatenated into a URL
+ *     (except for IDs, which are cast to Number() to prevent injection)
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import { logInfo, logError } from '@/lib/server-log';
+import { requireSM, isNextResponse } from '@/lib/auth-server';
 import db from '@/lib/db';
 
 const D4H_BASE = 'https://api.team-manager.ca.d4h.com';
 
-async function d4hFetch(token: string, path: string, method = 'GET', body?: object) {
-  const url = `${D4H_BASE}${path}`;
-  logInfo('d4h', `${method} ${url}`);
+interface D4hFetchOpts {
+  /**
+   * When true, suppress all logging for this call.
+   * Use for optional/probe endpoints (e.g. duty-roster, team detail) that are
+   * known to 404 on some D4H configurations.  The caller's .catch() still fires;
+   * we just don't clutter the log with expected failures.
+   */
+  silent?: boolean;
+}
+
+async function d4hFetch(
+  token:  string,
+  path:   string,
+  method: string = 'GET',
+  body?:  object,
+  opts?:  D4hFetchOpts,
+) {
+  const url    = `${D4H_BASE}${path}`;
+  const silent = opts?.silent ?? false;
+
+  if (!silent) logInfo('d4h', `${method} ${url}`);
+
   const res = await fetch(url, {
     method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization:  `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+
   const data = await res.json().catch(() => ({}));
+
   if (!res.ok) {
     const msg = data?.title ?? data?.message ?? data?.error ?? `HTTP ${res.status}`;
-    logError('d4h', `${method} ${url} failed`, new Error(`${res.status} — ${msg} — body: ${JSON.stringify(data).slice(0, 400)}`));
+    // Only log errors for non-silent calls — silent probes are expected to fail
+    // on D4H instances that don't support the endpoint.
+    if (!silent) {
+      logError(
+        'd4h',
+        `${method} ${url} failed`,
+        new Error(`${res.status} — ${msg} — body: ${JSON.stringify(data).slice(0, 400)}`),
+      );
+    }
     throw new Error(msg);
   }
-  logInfo('d4h', `${method} ${url} → ${res.status}`);
+
+  if (!silent) logInfo('d4h', `${method} ${url} → ${res.status}`);
   return data;
 }
 
@@ -49,6 +105,14 @@ async function getTeamId(token: string, teamIdOverride?: number): Promise<number
 }
 
 export async function POST(req: NextRequest) {
+  // ── SECURITY: Require SM authentication before reading any credentials ──────
+  // Without this guard, an unauthenticated caller could:
+  //   a) Test arbitrary D4H tokens through our server (credential stuffing)
+  //   b) Trigger D4H API calls with a known token if they intercept network traffic
+  // OWASP A01:2021 — Broken Access Control
+  const authResult = requireSM(req);
+  if (isNextResponse(authResult)) return authResult;
+
   const body = await req.json();
   const { action } = body;
   let token: string = (body.token ?? '').trim();
@@ -86,11 +150,12 @@ export async function POST(req: NextRequest) {
         .filter(m => m?.owner?.resourceType === 'Team')
         .map(m => ({ id: m.owner!.id!, name: m.owner!.name as string | undefined }));
 
-      // For teams where /v3/whoami returned no name, fetch it directly
+      // For teams where /v3/whoami returned no name, fetch it directly.
+      // Use silent: true — /v3/team/{id} is optional and may 404 on some D4H orgs.
       const teams = await Promise.all(rawTeams.map(async (t) => {
         if (t.name) return { id: t.id, name: t.name, logo: null as string | null };
         try {
-          const td = await d4hFetch(token, `/v3/team/${t.id}`);
+          const td = await d4hFetch(token, `/v3/team/${t.id}`, 'GET', undefined, { silent: true });
           const name: string = td?.data?.title ?? td?.title ?? td?.data?.name ?? td?.name ?? `Team ${t.id}`;
           const logo: string | null = td?.data?.logo ?? td?.data?.logo_url ?? td?.data?.imageUrl ?? td?.logo ?? null;
           return { id: t.id, name, logo };
@@ -116,8 +181,8 @@ export async function POST(req: NextRequest) {
         const anyMatch = members.find(m => String(m?.owner?.id) === String(reqTeamId));
         if (anyMatch?.owner?.name) return NextResponse.json({ name: anyMatch.owner.name });
       }
-      // Fallback: try direct team endpoint
-      const teamData = await d4hFetch(token, `/v3/team/${reqTeamId}`).catch(() => null);
+      // Fallback: try direct team endpoint — silent because it 404s on some D4H orgs
+      const teamData = await d4hFetch(token, `/v3/team/${reqTeamId}`, 'GET', undefined, { silent: true }).catch(() => null);
       const name = teamData?.title ?? teamData?.name ?? teamData?.data?.title ?? teamData?.data?.name ?? null;
       return NextResponse.json({ name });
     }
@@ -136,9 +201,9 @@ export async function POST(req: NextRequest) {
     if (action === 'createIncident') {
       const { title, description, startsAt, endsAt } = body;
       const teamId = await getTeamId(token, teamIdOverride);
-      // D4H v3 uses "name" for incidents (not "title")
+      // D4H v3 uses "referenceDescription" for the display name
       const payload: Record<string, unknown> = {
-        name: title,
+        referenceDescription: title,
         description,
         startsAt: startsAt ?? new Date().toISOString(),
       };
@@ -152,9 +217,9 @@ export async function POST(req: NextRequest) {
     if (action === 'createExercise') {
       const { title, description, startsAt, endsAt } = body;
       const teamId = await getTeamId(token, teamIdOverride);
-      // D4H v3 uses "name" for exercises (not "title")
+      // D4H v3 uses "referenceDescription" for the display name
       const payload: Record<string, unknown> = {
-        name: title,
+        referenceDescription: title,
         description,
         startsAt: startsAt ?? new Date().toISOString(),
       };
@@ -169,7 +234,7 @@ export async function POST(req: NextRequest) {
       const { incidentId, title, description } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const payload: Record<string, unknown> = {};
-      if (title !== undefined)       payload.name = title;
+      if (title !== undefined)       payload.referenceDescription = title;
       if (description !== undefined) payload.description = description;
       const data = await d4hFetch(token, `/v3/team/${teamId}/incidents/${incidentId}`, 'PATCH', payload);
       return NextResponse.json({ incident: data?.data ?? data });
@@ -180,7 +245,7 @@ export async function POST(req: NextRequest) {
       const { exerciseId, title, description } = body;
       const teamId = await getTeamId(token, teamIdOverride);
       const payload: Record<string, unknown> = {};
-      if (title !== undefined)       payload.name = title;
+      if (title !== undefined)       payload.referenceDescription = title;
       if (description !== undefined) payload.description = description;
       const data = await d4hFetch(token, `/v3/team/${teamId}/exercises/${exerciseId}`, 'PATCH', payload);
       return NextResponse.json({ exercise: data?.data ?? data });
@@ -225,7 +290,8 @@ export async function POST(req: NextRequest) {
         d4hFetch(token, `/v3/team/${teamId}/members?size=500`),
         d4hFetch(token, `/v3/team/${teamId}/member-custom-statuses?size=100`).catch(() => ({ results: [] })),
         d4hFetch(token, `/v3/team/${teamId}/member-qualifications?size=500`).catch(() => ({ results: [] })),
-        d4hFetch(token, `/v3/team/${teamId}/member-awards?size=500`).catch(() => ({ results: [] })),
+        // silent: true — member-awards 404s on D4H orgs that use the qualifications module instead
+        d4hFetch(token, `/v3/team/${teamId}/member-awards?size=500`, 'GET', undefined, { silent: true }).catch(() => ({ results: [] })),
       ]);
 
       const customStatuses: any[] = customStatusData?.results ?? customStatusData?.data ?? [];
@@ -362,12 +428,13 @@ export async function POST(req: NextRequest) {
     if (action === 'getOnCall') {
       const teamId = await getTeamId(token, teamIdOverride);
       try {
-        // Try the duty-roster endpoint; fall back to duty/shifts if not found
+        // Try duty-roster endpoint; fall back to duty/roster (path varies by D4H instance).
+        // Both are silent — they're known to 404 on Canadian D4H and we degrade gracefully.
         let data: any = null;
         try {
-          data = await d4hFetch(token, `/v3/team/${teamId}/duty-roster?size=50`);
+          data = await d4hFetch(token, `/v3/team/${teamId}/duty-roster?size=50`, 'GET', undefined, { silent: true });
         } catch {
-          data = await d4hFetch(token, `/v3/team/${teamId}/duty/roster?size=50`);
+          data = await d4hFetch(token, `/v3/team/${teamId}/duty/roster?size=50`, 'GET', undefined, { silent: true });
         }
         const entries: any[] = data?.results ?? data?.data ?? [];
         return NextResponse.json({

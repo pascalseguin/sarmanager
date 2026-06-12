@@ -106,6 +106,7 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
   const [opName, setOpName] = useState('');
   const [deployTimestamp, setDeployTimestamp] = useState<string | undefined>(undefined);
   const [opActive, setOpActive] = useState<boolean | null>(null);
+  const [ippDirectDisabled, setIppDirectDisabled] = useState(false);
   const [step, setStep] = useState<Step>(0);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -148,6 +149,7 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
         setOpActive(d.active);
         setOpName(d.operationName ?? '');
         setDeployTimestamp(d.deployTimestamp ?? undefined);
+        setIppDirectDisabled(!!d.ippDirectDisabled);
       })
       .catch(() => setOpActive(false));
   }, [opId]);
@@ -346,7 +348,10 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
         {step === 0 && (
           <div className="bg-white rounded-xl shadow p-5 border-l-4 border-blue-500">
             <h2 className="font-bold text-lg mb-1">Identify Yourself</h2>
-            <p className="text-sm text-gray-500 mb-4">Your name and phone must match the {settings.orgName} roster.</p>
+            <p className="text-sm text-gray-500 mb-1">Your name and phone must match the {settings.orgName} roster.</p>
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4 text-xs text-blue-700">
+              Use your full legal name as it appears in D4H — not a nickname. Your phone number is used to look you up if there are multiple name matches.
+            </div>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">First Name</label>
@@ -375,7 +380,10 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
         {step === 1 && auth && (
           <div className="bg-white rounded-xl shadow p-5 border-l-4 border-cyan-500">
             <h2 className="font-bold text-lg mb-0.5">Welcome, {auth.name}</h2>
-            <p className="text-sm text-gray-500 mb-4">Review your qualifications on file.</p>
+            <p className="text-sm text-gray-500 mb-1">Review your qualifications on file.</p>
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4 text-xs text-blue-700">
+              These qualifications are pulled from D4H. If a cert has expired or the list is wrong, uncheck the box and describe the issue — the SM will be notified.
+            </div>
             {auth.qualifications.length > 0 ? (
               <div className="flex flex-wrap gap-2 mb-4">
                 {auth.qualifications.map(q => (
@@ -408,7 +416,10 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
         {/* ── STEP 2: FITNESS ── */}
         {step === 2 && (
           <div className="bg-white rounded-xl shadow p-5 border-l-4 border-yellow-500">
-            <h2 className="font-bold text-lg mb-4">Fitness &amp; Availability</h2>
+            <h2 className="font-bold text-lg mb-1">Fitness &amp; Availability</h2>
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4 text-xs text-blue-700">
+              Your <strong>drop-dead time</strong> is the latest you can stay — fuel range, medication schedule, family commitments, etc. The SM uses this to plan rotations and ensure no one overstays. Driving requires at least 4 hours of available runtime.
+            </div>
             <div className="mb-5">
               <p className="text-sm font-medium text-gray-700 mb-2">Field Status</p>
               <div className="grid grid-cols-2 gap-3">
@@ -444,7 +455,9 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
         {step === 3 && (
           <div className="bg-white rounded-xl shadow p-5 border-l-4 border-cyan-500">
             <h2 className="font-bold text-lg mb-1">Vehicle Manifest</h2>
-            <p className="text-sm text-gray-500 mb-4">Assign yourself to a vehicle or proceed directly to IPP.</p>
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-4 text-xs text-blue-700">
+              Claim a seat so the SM knows your transport to the scene. Claim driver only if you have 4+ hours available and are fit for field. Passengers can ride even before a driver is assigned — the SM will confirm vehicle drivers.
+            </div>
             {vehiclesLoading && <p className="text-sm text-gray-500">Loading vehicles…</p>}
             <div className="space-y-2 mb-3">
               {vehicles.map(v => {
@@ -462,19 +475,21 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
                         className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                         {hasDriver ? 'Driver taken' : !canDrive ? 'Driver locked' : '🚗 Claim Driver'}
                       </button>
-                      <button disabled={!hasDriver || isFull || busy} onClick={() => claimVehicle(v, 'passenger')}
+                      <button disabled={isFull || busy} onClick={() => claimVehicle(v, 'passenger')}
                         className="px-3 py-1.5 rounded-lg text-xs font-medium border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                        {isFull ? 'Full' : !hasDriver ? 'No driver yet' : '+ Passenger'}
+                        {isFull ? 'Full' : '+ Passenger'}
                       </button>
                     </div>
                   </div>
                 );
               })}
             </div>
-            <button onClick={() => { setVehicleChoice('direct'); setChosenVehicle(null); }}
-              className={`w-full p-3 rounded-xl border-2 font-bold text-sm transition-colors ${vehicleChoice === 'direct' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
-              📍 Attend IPP Direct (own transport)
-            </button>
+            {!ippDirectDisabled && (
+              <button onClick={() => { setVehicleChoice('direct'); setChosenVehicle(null); }}
+                className={`w-full p-3 rounded-xl border-2 font-bold text-sm transition-colors ${vehicleChoice === 'direct' ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                📍 Attend IPP Direct (own transport)
+              </button>
+            )}
             <button onClick={handleVehicleNext} disabled={busy || (!vehicleChoice && !chosenVehicle)}
               className="w-full mt-4 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
               {busy ? 'Saving…' : 'Continue →'}
@@ -487,7 +502,9 @@ export default function CheckInPage({ params }: { params: Promise<{ opId: string
           <div className="bg-white rounded-xl shadow p-5 border-l-4 border-red-500">
             <h2 className="font-bold text-lg mb-0.5">Pre-Departure Vehicle Inspection</h2>
             <p className="text-sm text-gray-500 mb-1">{chosenVehicle?.name}</p>
-            <p className="text-xs text-gray-400 mb-4">All items must be verified before proceeding.</p>
+            <div className="bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 mb-3 text-xs text-blue-700">
+              As the driver you are responsible for your crew's safety. Walk around the vehicle and check each item physically before ticking it. The SM can see your submission in the board.
+            </div>
             <div className="space-y-2 mb-4">
               {INSPECTION_ITEMS.map(item => (
                 <label key={item} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${

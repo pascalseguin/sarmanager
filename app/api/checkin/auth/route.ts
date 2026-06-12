@@ -1,21 +1,69 @@
+/**
+ * app/api/checkin/auth/route.ts — Searcher identity verification for check-in portal
+ *
+ * PURPOSE: Identify a field searcher during self-service check-in WITHOUT requiring
+ * a pre-issued username and password.  Searchers provide their name + phone number,
+ * and the server looks them up in the personnel roster.
+ *
+ * AUTHENTICATION MODEL:
+ *   This endpoint intentionally does NOT require a login session.  The check-in
+ *   portal runs on a device passed to searchers (or via an SMS link) and they may
+ *   not have app accounts.  The trade-off is:
+ *     Risk:       Someone who knows another person's name + last-7-digits of phone
+ *                 could check them in falsely.
+ *     Mitigation: The SM sees every check-in in real time on the board and can
+ *                 revoke fraudulent entries.  This is an accepted operational risk
+ *                 for field-accessibility reasons.
+ *
+ *   See feature backlog: optional per-operation PIN / SMS verification code.
+ *
+ * SECURITY:
+ *   - Phone matching uses the last 7 digits only to accommodate varied formatting.
+ *   - Name lookup uses LOWER() for case-insensitive matching (no LIKE, no regex
+ *     injection risk — parameterised IN query with developer-generated placeholders).
+ *   - Error messages distinguish "name not found" from "phone doesn't match" to
+ *     help legitimate searchers self-correct.  This does expose that a name is in
+ *     the roster, but the roster is non-sensitive and the check-in device is
+ *     physically controlled.
+ *
+ * OWASP A07:2021 — Identification and Authentication Failures (acknowledged trade-off)
+ * OWASP A01:2021 — Broken Access Control: operation-closed check prevents check-in
+ *                   after an operation is complete.
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import db from '@/lib/db';
 
+/**
+ * Check whether a D4H member is currently on-call, and return their on-call
+ * end time if so.  Used to pre-populate the drop-dead time field on the fitness
+ * screen.  Non-fatal: returns null on any error (D4H unavailable, token missing).
+ */
 async function checkOnCall(d4hMemberId: number): Promise<string | null> {
   try {
-    const row = db.prepare("SELECT value FROM config WHERE key = 'd4h_token'").get() as any;
-    const token = row?.value;
+    const row     = db.prepare("SELECT value FROM config WHERE key = 'd4h_token'").get() as any;
+    const token   = row?.value;
     const teamRow = db.prepare("SELECT value FROM config WHERE key = 'd4h_team_id'").get() as any;
-    const teamId = teamRow?.value;
+    const teamId  = teamRow?.value;
     if (!token || !teamId) return null;
-    const res = await fetch(`https://api.d4h.com/v3/team/${teamId}/duty-roster/on-call`, {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
+
+    // D4H CA API base URL.  /duty-roster returns current on-call schedule entries.
+    // Both /duty-roster and /duty/roster are tried for compatibility across D4H regions.
+    // Non-fatal: !res.ok returns null rather than logging, because 404 is expected on
+    // D4H instances that don't use the duty roster module.
+    const CA_BASE = 'https://api.team-manager.ca.d4h.com';
+    let data: any = null;
+    for (const path of [`/v3/team/${teamId}/duty-roster?size=50`, `/v3/team/${teamId}/duty/roster?size=50`]) {
+      const res = await fetch(`${CA_BASE}${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      });
+      if (res.ok) { data = await res.json(); break; }
+    }
+    if (!data) return null;
+
     const entries: any[] = data?.data ?? data?.results ?? [];
     const entry = entries.find((e: any) => (e.member?.id ?? e.member_id) === d4hMemberId);
-    return entry?.end_at ?? entry?.ends_at ?? null;
+    return entry?.end_at ?? entry?.ends_at ?? entry?.endsAt ?? null;
   } catch { return null; }
 }
 

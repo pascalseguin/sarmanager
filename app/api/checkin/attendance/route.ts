@@ -1,6 +1,37 @@
+/**
+ * app/api/checkin/attendance/route.ts — Record a searcher's check-in
+ *
+ * PURPOSE: Persist a searcher's fitness, drop-dead time, qualification confirmation,
+ * and vehicle assignment to `searcher_checkins`.  Also best-effort posts attendance
+ * to D4H so the incident's attendance list stays current.
+ *
+ * UNAUTHENTICATED (by design): This endpoint is called from the public check-in
+ * portal (no session cookie required).  See app/api/checkin/auth/route.ts for the
+ * rationale on why the check-in flow skips full authentication.
+ *
+ * IDEMPOTENT: If the same searcher submits again (e.g., browser back + re-submit),
+ * the existing row is updated rather than creating a duplicate.  The check is on
+ * (operation_id, searcher_name) — not perfect (two people with the same name on
+ * the same operation) but acceptable in practice.
+ *
+ * D4H ATTENDANCE: Posted in a fire-and-forget pattern — failure to reach D4H does
+ * NOT fail the check-in.  The check-in record exists in our DB regardless.
+ *
+ * SECURITY:
+ *   - operationId is used in a parameterised query — no injection risk.
+ *   - searcherName comes from the auth step which validated it against the roster.
+ *     It is still parameterised in the SQL here.
+ *   - No authentication token required by design (field accessibility).
+ */
+
 import { NextRequest, NextResponse } from 'next/server';
 import db, { randomUUID } from '@/lib/db';
 
+/**
+ * Post attendance to D4H for the given member on the given activity.
+ * Returns the D4H attendance record ID, or null if the call fails.
+ * Errors are intentionally swallowed — D4H unavailability must not block check-in.
+ */
 async function postD4HAttendance(d4hMemberId: number, activityId: number): Promise<number | null> {
   try {
     const tokenRow = db.prepare("SELECT value FROM config WHERE key = 'd4h_token'").get() as any;

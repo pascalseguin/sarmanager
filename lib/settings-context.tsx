@@ -15,6 +15,8 @@ export interface CalTopoSettings {
   d4hTeamId: string;
   d4hTeamName: string;
   hereApiKey: string;
+  geocodeCountry: string;  // ISO 3166-1 alpha-2 (e.g. 'ca', 'us')
+  geocodeRegion: string;   // Province / state full name (e.g. 'Alberta')
   opNameTemplate: string;
   // Organization identity
   orgName: string;
@@ -56,6 +58,8 @@ const defaultSettings: CalTopoSettings = {
   d4hTeamId: '',
   d4hTeamName: '',
   hereApiKey: '',
+  geocodeCountry: '',
+  geocodeRegion: '',
   opNameTemplate: '{location}-{date}-{d4h_id}',
   orgName: 'SEASAR',
   orgFullName: 'South Eastern Alberta Search & Rescue',

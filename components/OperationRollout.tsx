@@ -2114,6 +2114,15 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
   }
 
 
+  async function updateDDT(checkinId: string, isoTime: string) {
+    await fetch(`/api/checkin/${checkinId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ drop_dead_time: isoTime }),
+    });
+    setCheckins(prev => prev.map(c => c.id === checkinId ? { ...c, drop_dead_time: isoTime } : c));
+  }
+
   async function heardMember(checkinId: string) {
     const now = new Date().toISOString();
     await fetch(`/api/checkin/${checkinId}`, {
@@ -2240,7 +2249,7 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
                     t.status === 'returned' ? 'bg-gray-100 text-gray-600' :
                     'bg-yellow-100 text-yellow-700'}`}>{t.status}</span>
                 </div>
-                {members.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} yellowMins={yellowMins} redMins={redMins} />)}
+                {members.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} onEditDDT={isSM ? (t) => updateDDT(c.id, t) : undefined} yellowMins={yellowMins} redMins={redMins} />)}
               </div>
             );
           })}
@@ -2248,13 +2257,13 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
             <>
               <div className="px-3 py-1 text-xs font-bold text-gray-400 uppercase bg-gray-50 border-b border-t">Unassigned</div>
               {fieldMembers.filter(c => !assignedNames.has(c.searcher_name.toLowerCase()))
-                .map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} yellowMins={yellowMins} redMins={redMins} />)}
+                .map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} onEditDDT={isSM ? (t) => updateDDT(c.id, t) : undefined} yellowMins={yellowMins} redMins={redMins} />)}
             </>
           )}
           {baseMembers.length > 0 && (
             <>
               <div className="px-3 py-1 text-xs font-bold text-gray-400 uppercase bg-gray-50 border-b border-t">Base ({baseMembers.length})</div>
-              {baseMembers.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} isBase yellowMins={yellowMins} redMins={redMins} />)}
+              {baseMembers.map(c => <MemberRow key={c.id} c={c} onHeard={() => heardMember(c.id)} onEditDDT={isSM ? (t) => updateDDT(c.id, t) : undefined} isBase yellowMins={yellowMins} redMins={redMins} />)}
             </>
           )}
           {checkins.length === 0 && (
@@ -2493,14 +2502,26 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
   );
 }
 
-function MemberRow({ c, onHeard, isBase, yellowMins = 45, redMins = 60 }: {
-  c: CheckIn; onHeard: () => void; isBase?: boolean; yellowMins?: number; redMins?: number;
+function MemberRow({ c, onHeard, onEditDDT, isBase, yellowMins = 45, redMins = 60 }: {
+  c: CheckIn; onHeard: () => void; onEditDDT?: (isoTime: string) => void; isBase?: boolean; yellowMins?: number; redMins?: number;
 }) {
   const ddt = new Date(c.drop_dead_time);
   const minsLeft = Math.floor((ddt.getTime() - Date.now()) / 60000);
   const ddtOverdue = minsLeft < 0;
   const ddtUrgent  = !ddtOverdue && minsLeft < 15;
   const rs = radioStatus(c.last_heard_at, yellowMins, redMins);
+  const [editing, setEditing] = useState(false);
+  const [editVal, setEditVal] = useState(ddt.toTimeString().slice(0, 5));
+
+  function commitEdit() {
+    setEditing(false);
+    if (!onEditDDT) return;
+    const [h, m] = editVal.split(':').map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    if (d <= new Date()) d.setDate(d.getDate() + 1);
+    onEditDDT(d.toISOString());
+  }
 
   return (
     <div className="flex items-center gap-1.5 px-3 py-1.5 border-b text-xs hover:bg-gray-50 group">
@@ -2512,9 +2533,21 @@ function MemberRow({ c, onHeard, isBase, yellowMins = 45, redMins = 60 }: {
           {rs.mins}m
         </span>
       )}
-      <span className={`font-mono shrink-0 ${ddtOverdue ? 'text-red-600 font-bold' : ddtUrgent ? 'text-yellow-600' : 'text-gray-400'}`}>
-        {ddtOverdue ? `+${-minsLeft}m` : `${minsLeft}m`}
-      </span>
+      {editing && onEditDDT ? (
+        <input type="time" value={editVal}
+          onChange={e => setEditVal(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={e => { if (e.key === 'Enter') commitEdit(); if (e.key === 'Escape') setEditing(false); }}
+          className="font-mono text-xs w-16 border border-blue-400 rounded px-0.5 focus:outline-none"
+          autoFocus />
+      ) : (
+        <span
+          onClick={() => { if (onEditDDT) setEditing(true); }}
+          className={`font-mono shrink-0 ${ddtOverdue ? 'text-red-600 font-bold' : ddtUrgent ? 'text-yellow-600' : 'text-gray-400'} ${onEditDDT ? 'cursor-pointer hover:underline' : ''}`}
+          title={onEditDDT ? 'Click to edit drop-dead time' : undefined}>
+          {ddtOverdue ? `+${-minsLeft}m` : `${minsLeft}m`}
+        </span>
+      )}
       <button onClick={e => { e.stopPropagation(); onHeard(); }}
         className="shrink-0 text-gray-300 hover:text-green-600 transition-colors opacity-0 group-hover:opacity-100"
         title="Mark heard">✓</button>
@@ -3282,7 +3315,9 @@ function CalTopoBrowseTab({ op }: { op: Operation }) {
 function OperationEditTab({ op, onUpdated }: { op: Operation; onUpdated: (op: Operation) => void }) {
   const token = typeof window !== 'undefined' ? (localStorage.getItem('sarmanager_session_token') ?? '') : '';
 
+  const [ippDirectDisabled, setIppDirectDisabled] = useState(!!op.ipp_direct_disabled);
   const [form, setForm] = useState<Record<string, string>>({
+    police_file_number:      op.police_file_number ?? '',
     name:                    op.name ?? '',
     lost_person_name:        op.lost_person_name ?? '',
     lost_person_age:         op.lost_person_age != null ? String(op.lost_person_age) : '',
@@ -3309,7 +3344,7 @@ function OperationEditTab({ op, onUpdated }: { op: Operation; onUpdated: (op: Op
   async function save() {
     setSaving(true); setMsg(null);
     try {
-      const payload: Record<string, unknown> = { ...form };
+      const payload: Record<string, unknown> = { ...form, ipp_direct_disabled: ippDirectDisabled ? 1 : 0 };
       if (payload.lost_person_age) payload.lost_person_age = Number(payload.lost_person_age);
       else delete payload.lost_person_age;
       const res = await fetch(`/api/operations/${op.id}`, {
@@ -3370,6 +3405,25 @@ function OperationEditTab({ op, onUpdated }: { op: Operation; onUpdated: (op: Op
         </div>
       </div>
 
+      {/* Check-in settings */}
+      <div className="border border-gray-200 rounded-xl p-4 mb-5">
+        <div className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-3">Check-In Settings</div>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={ippDirectDisabled}
+            onChange={e => setIppDirectDisabled(e.target.checked)}
+            className="mt-0.5 w-4 h-4 accent-red-600 shrink-0"
+          />
+          <div>
+            <div className="text-sm font-medium text-gray-700">Disable "Attend IPP Direct"</div>
+            <div className="text-xs text-gray-400 mt-0.5">
+              Searchers must claim a vehicle seat — no option to go directly to IPP.
+            </div>
+          </div>
+        </label>
+      </div>
+
       {/* 3-column desktop layout */}
       <div className="grid grid-cols-3 gap-6">
         {/* Column 1: Subject */}
@@ -3397,6 +3451,7 @@ function OperationEditTab({ op, onUpdated }: { op: Operation; onUpdated: (op: Op
         {/* Column 2: Tasking & Location */}
         <div className="space-y-3">
           <div className="text-xs font-bold text-gray-400 uppercase tracking-wide border-b pb-1">Tasking</div>
+          {inp('police_file_number', 'Police File Number')}
           {inp('name', 'Operation Name')}
           {inp('tasking_agency', 'Agency')}
           {inp('oic_name', 'OIC Name')}

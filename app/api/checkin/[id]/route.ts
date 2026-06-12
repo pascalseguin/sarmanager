@@ -12,6 +12,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const updates: string[] = [];
     const vals: unknown[] = [];
     if (body.last_heard_at !== undefined) { updates.push('last_heard_at = ?'); vals.push(body.last_heard_at); }
+    if (body.drop_dead_time !== undefined) { updates.push('drop_dead_time = ?'); vals.push(body.drop_dead_time); }
     if (!updates.length) return NextResponse.json({ error: 'No fields' }, { status: 400 });
     vals.push(id);
     db.prepare(`UPDATE searcher_checkins SET ${updates.join(', ')} WHERE id = ?`).run(...vals);

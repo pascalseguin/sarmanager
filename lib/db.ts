@@ -1,3 +1,32 @@
+/**
+ * lib/db.ts — SQLite database initialisation, schema, and migrations
+ *
+ * PURPOSE: Single entry point for the database connection.  All API routes
+ * `import db from '@/lib/db'` and get the same singleton instance.
+ *
+ * ARCHITECTURE:
+ *   - better-sqlite3 is used (synchronous SQLite bindings) because Next.js API
+ *     routes run in a Node.js single-thread context.  Synchronous DB access
+ *     simplifies error handling and avoids callback hell.
+ *   - The DB file lives in the user's AppData directory so it survives app updates
+ *     and is not bundled with the installer.
+ *
+ * MIGRATIONS (runtime ALTER TABLE):
+ *   Schema changes for existing installs are handled via the `migrations` array at
+ *   the bottom of the file.  Each statement is wrapped in try/catch so it is a
+ *   no-op when the column already exists.  Never remove an old migration entry —
+ *   adding duplicates is safe; removing them is not.
+ *
+ * SECURITY:
+ *   - WAL journal mode: improves concurrency and reduces the chance of corruption
+ *     if the process is killed mid-write.
+ *   - foreign_keys = ON: enforces referential integrity at the SQLite level.
+ *   - All DML uses parameterised queries (db.prepare().run(param, ...)).  The schema
+ *     DDL here is developer-controlled (not user-supplied) so exec() is safe.
+ *
+ * OWASP A03:2021 — Injection: parameterised queries prevent SQL injection.
+ */
+
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
@@ -5,6 +34,10 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 import bcrypt from 'bcryptjs';
 
+// ── Data directory ─────────────────────────────────────────────────────────────
+// On Windows: %APPDATA%\SAR Manager\data
+// On macOS/Linux: ~/.local/share/SAR Manager/data
+// Override with the DB_PATH env-var for testing (e.g., DB_PATH=':memory:').
 const DATA_DIR = process.env.DB_PATH
   ? path.dirname(process.env.DB_PATH)
   : path.join(
@@ -18,7 +51,15 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const DB_FILE = process.env.DB_PATH || path.join(DATA_DIR, 'sar-manager.db');
 
 const db = new Database(DB_FILE);
+
+// WAL (Write-Ahead Logging) mode:
+//   - Readers don't block writers and vice-versa.
+//   - Greatly reduces the chance of SQLITE_BUSY errors when the board polls every 15s
+//     while the user is saving data.
 db.pragma('journal_mode = WAL');
+
+// Enforce foreign key constraints — SQLite ignores FK violations by default.
+// This catches referential integrity bugs during development.
 db.pragma('foreign_keys = ON');
 
 // ── Core tables ───────────────────────────────────────────────────────────────
@@ -363,12 +404,27 @@ const migrations = [
   // These were in the original CREATE TABLE but may be missing in older installs
   "ALTER TABLE operations ADD COLUMN d4h_incident_id TEXT",
   "ALTER TABLE operations ADD COLUMN caltopo_map_url TEXT",
+  "ALTER TABLE operations ADD COLUMN ipp_direct_disabled INTEGER DEFAULT 0",
+  "ALTER TABLE operations ADD COLUMN police_file_number TEXT",
 ];
 for (const sql of migrations) {
   try { db.prepare(sql).run(); } catch { /* column already exists */ }
 }
 
 // ── Seed default SM account ───────────────────────────────────────────────────
+//
+// SECURITY: We MUST NOT hardcode a known default password (e.g., "admin123").
+// A hardcoded default is trivially enumerated by attackers and is listed in
+// OWASP Top 10 2021 A07 — Identification and Authentication Failures.
+//
+// APPROACH: On first run, generate a cryptographically random initial password,
+// write it to a plaintext file in the user-owned data directory, and print the
+// path to the console.  The SM reads the file, logs in, and should change the
+// password immediately via Settings.
+//
+// The credentials file is NOT deleted automatically because the SM may need to
+// recover it if they forget the password before changing it.  Document this in
+// the onboarding instructions.
 
 function ensurePersonnel(userId: string, name: string, role: string) {
   const existing = db.prepare('SELECT id FROM personnel WHERE user_id = ?').get(userId);
@@ -380,11 +436,44 @@ function ensurePersonnel(userId: string, name: string, role: string) {
 
 const adminRow = db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as any;
 if (!adminRow) {
+  // First run — generate a random initial password instead of using a known default.
+  // crypto.randomBytes(16) produces 16 bytes of CSPRNG output = 32 hex characters.
+  // This is ~128 bits of entropy, far exceeding NIST SP 800-63B requirements.
+  const { randomBytes } = require('crypto') as typeof import('crypto');
+  const initialPassword = randomBytes(16).toString('hex'); // e.g. "a3f1e8c90d2b..."
+
   const adminId = randomUUID();
   db.prepare(`INSERT INTO users (id, username, email, password_hash, role, display_name)
     VALUES (?, 'admin', 'admin@sar-manager.local', ?, 'sm', 'Admin')`)
-    .run(adminId, bcrypt.hashSync('admin123', 10));
+    .run(adminId, bcrypt.hashSync(initialPassword, 12)); // bcrypt cost 12 (OWASP recommended minimum)
   ensurePersonnel(adminId, 'Admin', 'Search Manager');
+
+  // Write credentials to a local file the SM can read at first login
+  const credFile = path.join(DATA_DIR, 'INITIAL_CREDENTIALS.txt');
+  const credContent = [
+    '================================================',
+    '  SAR Manager — Initial Administrator Credentials',
+    '================================================',
+    '',
+    `  Username : admin`,
+    `  Password : ${initialPassword}`,
+    '',
+    '  IMPORTANT: Log in and change this password in',
+    '  Settings → Users immediately.',
+    '',
+    `  Generated: ${new Date().toISOString()}`,
+    '================================================',
+  ].join('\n');
+
+  try {
+    fs.writeFileSync(credFile, credContent, { encoding: 'utf8', mode: 0o600 }); // owner read/write only
+    console.info(`\n[SAR Manager] First-run setup complete.`);
+    console.info(`[SAR Manager] Initial credentials written to: ${credFile}\n`);
+  } catch (writeErr) {
+    // If the file cannot be written (e.g., permissions), log the password to
+    // the console as a fallback — better than silent failure.
+    console.warn('[SAR Manager] Could not write credentials file. Initial password:', initialPassword);
+  }
 } else {
   ensurePersonnel(adminRow.id, 'Admin', 'Search Manager');
 }
