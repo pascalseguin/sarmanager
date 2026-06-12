@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import db, { randomUUID } from '@/lib/db';
 
+const VEHICLE_FILTER = `(UPPER(type) LIKE '%VEHICLE%' OR UPPER(type) LIKE '%TRUCK%' OR UPPER(type) LIKE '%VAN%' OR UPPER(type) LIKE '%UTV%' OR UPPER(type) LIKE '%ATV%' OR UPPER(category) LIKE '%VEHICLE%')`;
+
 // GET /api/checkin/vehicles?operationId=
 export async function GET(req: NextRequest) {
   const operationId = req.nextUrl.searchParams.get('operationId');
@@ -16,8 +18,47 @@ export async function GET(req: NextRequest) {
     else v.passengers.push(c.searcher_name);
   }
 
-  const vehicleFilter = `(UPPER(type) LIKE '%VEHICLE%' OR UPPER(type) LIKE '%TRUCK%' OR UPPER(type) LIKE '%VAN%' OR UPPER(type) LIKE '%UTV%' OR UPPER(type) LIKE '%ATV%' OR UPPER(category) LIKE '%VEHICLE%')`;
-  const localVehicles = db.prepare(`SELECT id, name, ref, location FROM equipment WHERE status != 'retired' AND ${vehicleFilter} ORDER BY LOWER(name)`).all() as any[];
+  // Derive allowed vehicles from the operation's deployed preset containers
+  const containerEntries = db.prepare(`
+    SELECT DISTINCT dpc.container_name
+    FROM operation_deployments od
+    JOIN deployment_preset_containers dpc ON od.preset_id = dpc.preset_id
+    WHERE od.operation_id = ?
+  `).all(operationId) as { container_name: string }[];
+
+  let localVehicles: any[];
+
+  if (containerEntries.length === 0) {
+    // No presets deployed — show all non-retired vehicles
+    localVehicles = db.prepare(
+      `SELECT id, name, ref, location FROM equipment WHERE status != 'retired' AND ${VEHICLE_FILTER} ORDER BY LOWER(name)`
+    ).all();
+  } else {
+    // Build WHERE clause from container entries (same logic as available-equipment route)
+    const wholeContainers: string[] = [];
+    const subLocPairs: { container: string; loc: string }[] = [];
+    for (const { container_name } of containerEntries) {
+      const sep = container_name.indexOf(' / ');
+      if (sep >= 0) subLocPairs.push({ container: container_name.slice(0, sep), loc: container_name.slice(sep + 3) });
+      else wholeContainers.push(container_name);
+    }
+
+    const all: any[] = [];
+    if (wholeContainers.length) {
+      const ph = wholeContainers.map(() => '?').join(',');
+      all.push(...db.prepare(
+        `SELECT id, name, ref, location FROM equipment WHERE status != 'retired' AND ${VEHICLE_FILTER} AND container IN (${ph}) ORDER BY LOWER(name)`
+      ).all(...wholeContainers));
+    }
+    for (const { container, loc } of subLocPairs) {
+      all.push(...db.prepare(
+        `SELECT id, name, ref, location FROM equipment WHERE status != 'retired' AND ${VEHICLE_FILTER} AND container = ? AND TRIM(COALESCE(location,'')) = ? ORDER BY LOWER(name)`
+      ).all(container, loc));
+    }
+
+    const seen = new Set<string>();
+    localVehicles = all.filter(e => { if (seen.has(e.id)) return false; seen.add(e.id); return true; });
+  }
 
   for (const v of localVehicles) {
     if (!vehicleMap.has(v.id)) {

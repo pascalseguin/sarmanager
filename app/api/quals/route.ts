@@ -50,17 +50,32 @@ export async function POST(req: NextRequest) {
     const { token, teamId } = body;
     if (!token || !teamId) return NextResponse.json({ error: 'token and teamId required' }, { status: 400 });
     try {
-      // Try qualifications endpoint first, then awards as fallback
-      const [qualsData, awardsData] = await Promise.all([
+      // Fetch all sources in parallel — schema endpoints + member-level assignments as fallback
+      const [qualsData, awardsData, memberQualsData, memberAwardsData] = await Promise.all([
         d4hFetch(token, `/v3/team/${teamId}/qualifications?size=500`).catch(() => null),
         d4hFetch(token, `/v3/team/${teamId}/awards?size=500`).catch(() => null),
+        d4hFetch(token, `/v3/team/${teamId}/member-qualifications?size=500`).catch(() => null),
+        d4hFetch(token, `/v3/team/${teamId}/member-awards?size=500`).catch(() => null),
       ]);
 
-      const names = new Set<string>();
-      for (const row of [...(qualsData?.results ?? qualsData?.data ?? []), ...(awardsData?.results ?? awardsData?.data ?? [])]) {
-        const name: string = row?.title ?? row?.name ?? '';
-        if (name) names.add(name);
+      function extractNames(raw: any): string[] {
+        const rows: any[] = raw?.results ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
+        return rows.flatMap(row => {
+          // Schema-level row: { title, name }
+          // Member-assignment row: { qualification: { title }, award: { title } }
+          const name =
+            row?.qualification?.title ?? row?.award?.title ??
+            row?.title ?? row?.name ?? '';
+          return name ? [name as string] : [];
+        });
       }
+
+      const names = new Set<string>([
+        ...extractNames(qualsData),
+        ...extractNames(awardsData),
+        ...extractNames(memberQualsData),
+        ...extractNames(memberAwardsData),
+      ]);
 
       const sorted = [...names].sort((a, b) => a.localeCompare(b));
       db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('d4h_quals_cache', ?)").run(JSON.stringify(sorted));

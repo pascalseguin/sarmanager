@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useSettings } from '@/lib/settings-context';
 import { useQuals, invalidateQuals } from '@/lib/useQuals';
 import { useAuth } from '@/lib/auth-context';
@@ -59,6 +59,30 @@ export default function SettingsPage() {
     twilioAuthToken:  settings.twilioAuthToken ?? '',
     twilioFromNumber: settings.twilioFromNumber ?? '',
   });
+
+  // Sync form when settings load from server (async after mount)
+  useEffect(() => {
+    setForm({
+      credentialId:     settings.credentialId,
+      secret:           settings.secret,
+      accountId:        settings.accountId,
+      folderId:         settings.folderId,
+      ippFolderId:      settings.ippFolderId ?? '',
+      ringFolderId:     settings.ringFolderId ?? '',
+      d4hToken:         settings.d4hToken,
+      d4hTeamId:        settings.d4hTeamId,
+      d4hTeamName:      settings.d4hTeamName,
+      hereApiKey:       settings.hereApiKey,
+      opNameTemplate:   settings.opNameTemplate ?? '{location}-{date}-{d4h_id}',
+      orgName:          settings.orgName ?? 'SEASAR',
+      orgFullName:      settings.orgFullName ?? 'South Eastern Alberta Search & Rescue',
+      taskingAgencies:  (settings.taskingAgencies ?? ['RCMP', 'MHPS', 'AHS', 'STARS', 'CJFR', 'Other']) as string[],
+      lpbRingPcts:      (settings.lpbRingPcts ?? [50, 75, 95]) as number[],
+      twilioAccountSid: settings.twilioAccountSid ?? '',
+      twilioAuthToken:  settings.twilioAuthToken ?? '',
+      twilioFromNumber: settings.twilioFromNumber ?? '',
+    });
+  }, [settings]);
 
   const [saved, setSaved]           = useState(false);
   const [newAgency, setNewAgency]   = useState('');

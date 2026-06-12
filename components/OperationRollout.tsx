@@ -16,6 +16,7 @@ async function apiPatch(opId: string, patch: Partial<Operation>): Promise<Operat
   return data.operation ?? null;
 }
 import { useSettings } from '@/lib/settings-context';
+import { useAuth } from '@/lib/auth-context';
 import { ISRID, RING_COLORS, circlePolygon } from '@/lib/isrid';
 import { formatUTM } from '@/lib/utm';
 
@@ -181,7 +182,6 @@ interface AutoState {
   errors: Record<string, string>;
   d4hIncidentId?: string;
   caltopoMapId?: string;
-  caltopoUrl?: string;
   calloutId?: string;
   weatherSummary?: string;
 }
@@ -278,9 +278,8 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         } catch { /* ignore */ }
       }
 
-      const caltopoUrl = op.caltopo_map_id
-        ? `https://caltopo.com/m/${op.caltopo_map_id}`
-        : (auto.caltopoUrl ?? '');
+      const d4hMapId = op.caltopo_map_id ?? auto.caltopoMapId;
+      const caltopoUrl = d4hMapId ? `https://caltopo.com/m/${d4hMapId}` : '';
 
       // Build D4H title using the same op-name template as CalTopo
       const albertaDate = new Date().toLocaleDateString('en-CA', {
@@ -385,6 +384,9 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
         title: mapTitle,
         folderId: settings.folderId || undefined,
       });
+      // Save map ID immediately — if feature creation below fails, the ID is still preserved
+      { const earlyUpdate = await apiPatch(op.id, { caltopo_map_id: mapId });
+        if (earlyUpdate) onUpdated(earlyUpdate); }
 
       const ippLabel = op.ipp_type === 'pls' ? 'PLS (IPP)' : 'LKP (IPP)';
       const subjectName = op.lost_person_name ?? 'Subject';
@@ -464,10 +466,10 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
       const localFeatures = buildLocalCaltopoFeatures(op, ippLat, ippLon, profile);
       const caltopoFeatures = JSON.stringify({ type: 'FeatureCollection', features: localFeatures });
 
-      const updated = await apiPatch(op.id, { name: mapTitle, caltopo_map_id: mapId, caltopo_map_url: url, caltopo_features: caltopoFeatures });
+      const updated = await apiPatch(op.id, { name: mapTitle, caltopo_map_id: mapId, caltopo_features: caltopoFeatures });
       if (updated) onUpdated(updated);
 
-      setStatus('caltopo', 'done', { caltopoMapId: mapId, caltopoUrl: url });
+      setStatus('caltopo', 'done', { caltopoMapId: mapId });
     } catch (e: unknown) {
       setError('caltopo', e instanceof Error ? e.message : 'CalTopo error');
     }
@@ -513,7 +515,8 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
   async function runWhiteboard() {
     setStatus('whiteboard', 'running');
     try {
-      const mapUrl = op.caltopo_map_url ?? auto.caltopoUrl ?? (op.caltopo_map_id ? `https://caltopo.com/m/${op.caltopo_map_id}` : '');
+      const mapId = op.caltopo_map_id ?? auto.caltopoMapId;
+      const mapUrl = mapId ? `https://caltopo.com/m/${mapId}` : '';
       const portalUrl = typeof window !== 'undefined'
         ? `${window.location.origin}/checkin/${op.id}`
         : `/checkin/${op.id}`;
@@ -583,7 +586,8 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
     setFiring(false);
   }
 
-  const caltopoUrl = op.caltopo_map_url ?? auto.caltopoUrl ?? (op.caltopo_map_id ? `https://caltopo.com/m/${op.caltopo_map_id}` : '');
+  const caltopoMapId = op.caltopo_map_id ?? auto.caltopoMapId;
+  const caltopoUrl = caltopoMapId ? `https://caltopo.com/m/${caltopoMapId}` : '';
   const { h, label: elapsedLabel } = elapsed(op.started_at);
   const profile = ISRID[op.subject_category ?? ''] ?? ISRID.hiker;
   const ippLat = (op.ipp_type === 'pls' ? op.pls_lat : op.latitude) ?? 0;
@@ -2032,7 +2036,11 @@ function LPBPanel({ op, onUpdated, elapsedLabel }: { op: Operation; onUpdated: (
 interface CheckIn {
   id: string; searcher_name: string; fit_for_field: number;
   drop_dead_time: string; checked_in_at: string; vehicle_role?: string;
-  last_heard_at?: string;
+  vehicle_name?: string; last_heard_at?: string; inspection_submitted?: number;
+}
+interface VehicleClaim {
+  id: string; vehicle_id: string; vehicle_name: string;
+  role: 'driver' | 'passenger'; searcher_name: string;
 }
 interface TaskWithAssignments {
   id: string; name: string; task_number?: string; status: string;
@@ -2065,8 +2073,11 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
   const ippLat = (op.ipp_type === 'pls' ? op.pls_lat : op.latitude) ?? 0;
   const ippLon = (op.ipp_type === 'pls' ? op.pls_lon : op.longitude) ?? 0;
   const profile = ISRID[op.subject_category ?? ''] ?? ISRID.hiker;
+  const { user } = useAuth();
+  const isSM = user?.role === 'sm' || user?.role === 'admin';
   const [checkins, setCheckins] = useState<CheckIn[]>([]);
   const [tasks, setTasks]       = useState<TaskWithAssignments[]>([]);
+  const [vehicleClaims, setVehicleClaims] = useState<VehicleClaim[]>([]);
   const [features, setFeatures] = useState<unknown[]>([]);
   const [loadingMap, setLoadingMap] = useState(false);
   const [mapError, setMapError]     = useState('');
@@ -2098,9 +2109,10 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
       fetch(`/api/checkin/list?operationId=${op.id}`, { headers: { Authorization: `Bearer ${token}` } }),
       fetch(`/api/tasks?operation_id=${op.id}`,       { headers: { Authorization: `Bearer ${token}` } }),
     ]);
-    if (ciRes.ok)   { const d = await ciRes.json();   setCheckins(d.checkins ?? []); }
+    if (ciRes.ok)   { const d = await ciRes.json();   setCheckins(d.checkins ?? []); setVehicleClaims(d.vehicles ?? []); }
     if (taskRes.ok) { const d = await taskRes.json();  setTasks(d.tasks ?? []); }
   }
+
 
   async function heardMember(checkinId: string) {
     const now = new Date().toISOString();
@@ -2184,8 +2196,8 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
     loadMap();
   }, [op.id, op.caltopo_map_id]);
   useEffect(() => {
-    // Re-fetch board every 30s so new check-ins appear automatically
-    const t = setInterval(() => loadBoard(), 30000);
+    // Re-fetch board every 15s so new check-ins appear promptly
+    const t = setInterval(() => loadBoard(), 15000);
     return () => clearInterval(t);
   }, [op.id]);
 
@@ -2421,6 +2433,48 @@ function BoardTab({ op, settings }: { op: Operation; settings: ReturnType<typeof
               })}
             </div>
           )}
+        </div>
+
+        {/* Vehicles */}
+        <div className="bg-white rounded-xl shadow p-3">
+          <div className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">Vehicles</div>
+          {(() => {
+            const byVehicle = new Map<string, { name: string; driver?: string; passengers: string[]; inspected: boolean }>();
+            for (const claim of vehicleClaims) {
+              if (!byVehicle.has(claim.vehicle_id)) {
+                byVehicle.set(claim.vehicle_id, { name: claim.vehicle_name, passengers: [], inspected: false });
+              }
+              const v = byVehicle.get(claim.vehicle_id)!;
+              if (claim.role === 'driver') v.driver = claim.searcher_name;
+              else v.passengers.push(claim.searcher_name);
+            }
+            for (const [, v] of byVehicle) {
+              if (v.driver) {
+                const driverCheckin = checkins.find(c => c.searcher_name === v.driver);
+                if (driverCheckin?.inspection_submitted) v.inspected = true;
+              }
+            }
+            const entries = [...byVehicle.values()];
+            if (entries.length === 0) return <p className="text-xs text-gray-400">No vehicles claimed yet.</p>;
+            return (
+              <div className="space-y-2">
+                {entries.map((v, i) => (
+                  <div key={i} className={`rounded-lg border p-2 text-xs ${v.inspected ? 'border-green-300 bg-green-50' : 'border-gray-200'}`}>
+                    <div className="font-semibold text-gray-800 truncate">{v.name}</div>
+                    <div className="text-gray-500 mt-0.5">
+                      {v.driver ? `Driver: ${v.driver}` : <span className="text-yellow-600">No driver yet</span>}
+                    </div>
+                    {v.passengers.length > 0 && (
+                      <div className="text-gray-400 truncate">Passengers: {v.passengers.join(', ')}</div>
+                    )}
+                    <div className={`mt-0.5 font-semibold ${v.inspected ? 'text-green-600' : 'text-gray-400'}`}>
+                      {v.inspected ? '✓ Inspection complete' : '— Inspection pending'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Op Notes */}

@@ -359,6 +359,10 @@ const migrations = [
   "ALTER TABLE operations ADD COLUMN lkp_notes TEXT",
   "ALTER TABLE operations ADD COLUMN mutual_aid_orgs TEXT",
   "ALTER TABLE operations ADD COLUMN deployed_presets_json TEXT DEFAULT '[]'",
+  "ALTER TABLE operations ADD COLUMN requested_vehicles TEXT",
+  // These were in the original CREATE TABLE but may be missing in older installs
+  "ALTER TABLE operations ADD COLUMN d4h_incident_id TEXT",
+  "ALTER TABLE operations ADD COLUMN caltopo_map_url TEXT",
 ];
 for (const sql of migrations) {
   try { db.prepare(sql).run(); } catch { /* column already exists */ }

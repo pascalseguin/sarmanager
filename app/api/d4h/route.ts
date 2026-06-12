@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { logInfo, logError } from '@/lib/server-log';
+import db from '@/lib/db';
 
 const D4H_BASE = 'https://api.team-manager.ca.d4h.com';
 
@@ -50,14 +51,30 @@ async function getTeamId(token: string, teamIdOverride?: number): Promise<number
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const { action } = body;
-  const token: string = (body.token ?? '').trim();
+  let token: string = (body.token ?? '').trim();
+
+  // Fall back to DB-stored token if client didn't provide it (settings may not be loaded yet)
+  if (!token) {
+    try {
+      const row = db.prepare("SELECT value FROM config WHERE key = 'd4h_token'").get() as any;
+      token = row?.value?.trim() ?? '';
+    } catch { /* ignore */ }
+  }
 
   if (!token) {
     logError('d4h', `action=${action} called with no token`);
     return NextResponse.json({ error: 'Missing D4H token — configure it at /settings' }, { status: 400 });
   }
 
-  const teamIdOverride: number | undefined = body.teamId ? Number(body.teamId) : undefined;
+  let teamIdOverride: number | undefined = body.teamId ? Number(body.teamId) : undefined;
+  // Fall back to DB-stored team ID if not provided
+  if (!teamIdOverride) {
+    try {
+      const row = db.prepare("SELECT value FROM config WHERE key = 'd4h_team_id'").get() as any;
+      const tid = row?.value?.trim();
+      if (tid) teamIdOverride = Number(tid) || undefined;
+    } catch { /* ignore */ }
+  }
   logInfo('d4h', `action=${action}${teamIdOverride ? ` teamId=${teamIdOverride}` : ''}`);
   try {
 

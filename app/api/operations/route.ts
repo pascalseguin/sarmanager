@@ -51,6 +51,18 @@ export async function POST(req: NextRequest) {
     const cols = ['id', 'created_by', ...OP_FIELDS.filter(f => b[f] !== undefined)];
     const vals = [id, result.id, ...OP_FIELDS.filter(f => b[f] !== undefined).map(f => b[f] ?? null)];
     db.prepare(`INSERT INTO operations (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...vals);
+    // Sync deployed_presets_json → operation_deployments so equipment/vehicle filtering works immediately
+    if (b.deployed_presets_json) {
+      try {
+        const presetIds: string[] = JSON.parse(b.deployed_presets_json);
+        for (const presetId of presetIds) {
+          if (db.prepare('SELECT id FROM deployment_presets WHERE id = ?').get(presetId)) {
+            const exists = db.prepare('SELECT id FROM operation_deployments WHERE operation_id = ? AND preset_id = ?').get(id, presetId);
+            if (!exists) db.prepare('INSERT INTO operation_deployments (id, operation_id, preset_id) VALUES (?,?,?)').run(randomUUID(), id, presetId);
+          }
+        }
+      } catch { /* malformed JSON — skip */ }
+    }
     const op = db.prepare("SELECT * FROM operations WHERE id = ?").get(id);
     return NextResponse.json({ operation: withUtm(op as Record<string, unknown>) }, { status: 201 });
   } catch (e: unknown) {

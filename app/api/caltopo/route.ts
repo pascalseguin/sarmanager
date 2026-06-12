@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
 import { logInfo, logError } from '@/lib/server-log';
+import db from '@/lib/db';
 
 function sign(secret: string, method: string, url: string, expires: number, payload: string): string {
   const message = `${method} ${url}\n${expires}\n${payload}`;
@@ -59,9 +60,29 @@ async function routeToFolder(
   });
 }
 
+function readCredsFromDB(): { credentialId: string; secret: string; accountId: string } {
+  try {
+    const row = db.prepare("SELECT value FROM config WHERE key = 'app_settings'").get() as any;
+    if (row?.value) {
+      const s = JSON.parse(row.value);
+      return { credentialId: s.credentialId ?? '', secret: s.secret ?? '', accountId: s.accountId ?? '' };
+    }
+  } catch { /* ignore */ }
+  return { credentialId: '', secret: '', accountId: '' };
+}
+
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { action, credentialId, secret, accountId } = body;
+  const { action } = body;
+  let { credentialId, secret, accountId } = body as { credentialId?: string; secret?: string; accountId?: string };
+
+  // Fall back to DB-stored credentials if client didn't provide them (settings may not be loaded yet)
+  if (!credentialId || !secret || !accountId) {
+    const dbCreds = readCredsFromDB();
+    if (!credentialId) credentialId = dbCreds.credentialId;
+    if (!secret)       secret       = dbCreds.secret;
+    if (!accountId)    accountId    = dbCreds.accountId;
+  }
 
   if (!credentialId || !secret || !accountId) {
     logError('caltopo', `action=${action} called with missing credentials`);
