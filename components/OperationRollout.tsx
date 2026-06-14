@@ -190,6 +190,7 @@ const AUTO0: AutoState = { d4hIncident: 'idle', caltopo: 'idle', whiteboard: 'id
 
 function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Operation) => void }) {
   const { settings } = useSettings();
+  const { authFetch } = useAuth();
   const d4hToken = settings.d4hToken;
 
   // Decision state — managed locally so the banner can be dismissed without blocking the dashboard
@@ -227,7 +228,7 @@ function DeployDashboard({ op, onUpdated }: { op: Operation; onUpdated: (op: Ope
   }, []);
 
   async function callD4H(action: string, extra: object = {}) {
-    const res = await fetch('/api/d4h', {
+    const res = await authFetch('/api/d4h', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, token: d4hToken, ...(settings.d4hTeamId ? { teamId: Number(settings.d4hTeamId) } : {}), ...extra }),

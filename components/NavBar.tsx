@@ -21,6 +21,7 @@ function NavItem({ href, label, icon }: { href: string; label: string; icon: str
 /* ── Team selector dropdown ── */
 function TeamSelector() {
   const { settings, updateSettings } = useSettings();
+  const { authFetch } = useAuth();
   const [open, setOpen] = useState(false);
   const [teams, setTeams] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
@@ -39,7 +40,7 @@ function TeamSelector() {
     // Re-fetch if name is missing or looks like a fallback ID placeholder
     const isPlaceholder = !settings.d4hTeamName || /^Team \d+$/.test(settings.d4hTeamName);
     if (!isPlaceholder) return;
-    fetch('/api/d4h', {
+    authFetch('/api/d4h', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'getTeamInfo', token: settings.d4hToken, teamId: Number(settings.d4hTeamId) }),
     }).then(r => r.json()).then(d => {
@@ -51,7 +52,7 @@ function TeamSelector() {
     if (teams.length) return;
     setLoading(true);
     try {
-      const res = await fetch('/api/d4h', {
+      const res = await authFetch('/api/d4h', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'getTeams', token: settings.d4hToken }),
       });
@@ -105,7 +106,7 @@ function TeamSelector() {
 
 /* ── Full app shell ── */
 export default function NavBar() {
-  const { user, logout } = useAuth();
+  const { user, logout, authFetch } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
 

@@ -76,6 +76,23 @@ Set-Content (Join-Path $AppDir 'launch.vbs') $launchVbs -Encoding ASCII
 Stop-ScheduledTask       -TaskName $TaskName -ErrorAction SilentlyContinue
 Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
 
+# Kill any node.exe process running SAR Manager's server.js.
+# Stop-ScheduledTask only kills wscript.exe (the launcher); node.exe is launched
+# non-blocking (WScript.Shell.Run with bWaitOnReturn=False) and survives independently.
+# Without this kill, a reinstall leaves the old node.exe holding port 3000 and
+# serving stale code even after new files are copied.
+try {
+    $sarProcs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*server.js*' }
+    foreach ($p in $sarProcs) {
+        Write-Output "Stopping stale SAR Manager node.exe (PID $($p.ProcessId))..."
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    if ($sarProcs) { Start-Sleep -Milliseconds 800 }
+} catch {
+    Write-Output "Warning: could not enumerate node processes -- $_"
+}
+
 $silentVbsPath = Join-Path $AppDir 'start-silent.vbs'
 $action = New-ScheduledTaskAction `
     -Execute  'wscript.exe' `

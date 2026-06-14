@@ -5,6 +5,7 @@ import { Operation } from '@/lib/operations-store';
 import { parseUTMString, formatUTM } from '@/lib/utm';
 import { ISRID, circlePolygon } from '@/lib/isrid';
 import { useSettings } from '@/lib/settings-context';
+import { useAuth } from '@/lib/auth-context';
 
 interface DeploymentPreset {
   id: string; name: string; description?: string;
@@ -252,6 +253,7 @@ const STEPS = [
 
 export default function OperationIntake({ onCreated, onCancel }: Props) {
   const { settings } = useSettings();
+  const { authFetch } = useAuth();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<FormState>(blank());
   const [saving, setSaving] = useState(false);
@@ -384,7 +386,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
           const existingId = form.d4h_existing_id.trim();
           const updateAction = isExercise ? 'updateExercise' : 'updateIncident';
           const idKey        = isExercise ? 'exerciseId'    : 'incidentId';
-          await fetch('/api/d4h', {
+          await authFetch('/api/d4h', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -401,7 +403,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         } else if (form.d4h_mode === 'create' && form.d4h_title.trim()) {
           // ── Create mode: create a new D4H record ───────────────────────────
           const createAction = isExercise ? 'createExercise' : 'createIncident';
-          const res = await fetch('/api/d4h', {
+          const res = await authFetch('/api/d4h', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -527,7 +529,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
           .toUpperCase().replace(/ /g, '-').replace(',', '');
 
         const fileNum = op.police_file_number?.trim() ?? '';
-        const createRes = await fetch('/api/d4h', {
+        const createRes = await authFetch('/api/d4h', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -551,7 +553,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         if (!activityId) throw new Error('D4H returned no ID');
 
         // Rename to include D4H ID (non-fatal)
-        fetch('/api/d4h', {
+        authFetch('/api/d4h', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -750,7 +752,7 @@ export default function OperationIntake({ onCreated, onCancel }: Props) {
         const portalUrl = typeof window !== 'undefined'
           ? `${window.location.origin}/checkin/${cur.id}`
           : `/checkin/${cur.id}`;
-        await fetch('/api/d4h', {
+        await authFetch('/api/d4h', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

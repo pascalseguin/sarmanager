@@ -23,11 +23,9 @@ function rankRegionFirst(results: NominatimResult[], region: string): NominatimR
 async function hereGeocode(
   q: string, apiKey: string, country: string, region: string,
 ): Promise<NominatimResult[]> {
-  // Use the caller's country if set; fall back to CAN+USA
+  // HERE API `in` parameter: "countryCode:CAN,USA" (one prefix, comma-separated alpha-3)
   const hereCountry = country ? (ALPHA2_TO_ALPHA3[country] ?? country.toUpperCase()) : 'CAN,USA';
-  const inParam = hereCountry.includes(',')
-    ? hereCountry.split(',').map(c => `countryCode:${c}`).join(',')
-    : `countryCode:${hereCountry}`;
+  const inParam = `countryCode:${hereCountry}`;
   const url = `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(q)}&apiKey=${encodeURIComponent(apiKey)}&limit=5&in=${encodeURIComponent(inParam)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HERE ${res.status}`);
@@ -43,9 +41,9 @@ async function hereGeocode(
 async function nominatimGeocode(
   q: string, country: string, region: string,
 ): Promise<NominatimResult[]> {
-  // Nominatim uses ISO alpha-2; fall back to ca,us when no preference set
-  const countrycodes = country || 'ca,us';
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&addressdetails=1&countrycodes=${encodeURIComponent(countrycodes)}`;
+  // Only add countrycodes filter when user has explicitly configured one
+  const ccParam = country ? `&countrycodes=${encodeURIComponent(country)}` : '';
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=5&addressdetails=1${ccParam}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': `SARManager/1.0 (${process.env.CONTACT_EMAIL ?? 'contact@example.com'})` },
   });
